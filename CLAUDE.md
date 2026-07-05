@@ -30,6 +30,7 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   tick (smooth typing) and interleaves whole events (tool_start) in order.
 - **`bridge.ts`** — `PaneBridge`: the core. Turn lifecycle, token accounting,
   the permission/question interaction state machine.
+- **`expose.ts`** — optional public tunnel (`EXPOSE=pinggy|bore|ngrok|cloudflared`): spawns the tunnel CLI, scrapes its URL. Cloudflare quick tunnels break SSE — noted inline.
 - **`sse.ts` / `index.ts`** — even-terminal SSE fan-out + HTTP server.
 - **`parse.ts`** — screen menu parsing (`parseMenu`/`classifyMenu`).
 

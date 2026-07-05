@@ -1,5 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { networkInterfaces } from "node:os";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, networkInterfaces } from "node:os";
 import path from "node:path";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
@@ -16,10 +17,39 @@ import { emit, getMessages, sseHandler } from "./sse.js";
 import { paneRead } from "./herdr.js";
 import { logEvent, eventLogPath } from "./log.js";
 import { extractModel } from "./parse.js";
+import { startExpose } from "./expose.js";
 
 const VERSION = "0.1.0";
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
-const TOKEN = process.env.BRIDGE_TOKEN ?? randomBytes(16).toString("hex");
+
+// The bearer token. Priority: BRIDGE_TOKEN env → a token persisted under
+// ~/.config/even-better/token (generated once, reused across restarts so you
+// scan the QR once; rotate by deleting the file) → an ephemeral one.
+function resolveToken(): string {
+  if (process.env.BRIDGE_TOKEN) return process.env.BRIDGE_TOKEN;
+  const file = path.join(homedir(), ".config", "even-better", "token");
+  try {
+    if (existsSync(file)) {
+      const t = readFileSync(file, "utf8").trim();
+      if (t) return t;
+    }
+    mkdirSync(path.dirname(file), { recursive: true });
+    const t = randomBytes(24).toString("hex");
+    writeFileSync(file, t + "\n", { mode: 0o600 });
+    return t;
+  } catch {
+    return randomBytes(24).toString("hex");
+  }
+}
+const TOKEN = resolveToken();
+
+/** Constant-time token check (avoids leaking the token via comparison timing). */
+function tokenMatches(provided: string | undefined): boolean {
+  if (!provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 const app = express();
 app.use(cors());
@@ -29,7 +59,7 @@ function auth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   const queryToken = req.query.token as string | undefined;
   const provided = header?.startsWith("Bearer ") ? header.slice(7) : queryToken;
-  if (provided !== TOKEN) {
+  if (!tokenMatches(provided)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -255,9 +285,10 @@ function ipv4s(): string[] {
 const lanAddress = (): string | undefined => ipv4s().find((ip) => !isTailscale(ip));
 const tailscaleAddress = (): string | undefined => ipv4s().find(isTailscale);
 
-function urlFor(host: string): string {
-  return `http://${host}:${PORT}?token=${TOKEN}&defaultProvider=claude`;
-}
+const authQuery = `token=${TOKEN}&defaultProvider=claude`;
+const urlFor = (host: string): string => `http://${host}:${PORT}?${authQuery}`;
+// A tunnel gives a full public base (scheme+host); just append the auth query.
+const appUrlFromBase = (base: string): string => `${base}?${authQuery}`;
 
 // Which interface to listen on. Default 0.0.0.0 (all — convenient on a trusted
 // home LAN). On an untrusted network (office, public Wi-Fi) prefer BIND=tailscale
@@ -331,6 +362,9 @@ const server = app.listen(PORT, bind.host, async () => {
       qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
     }
   }
+  // Optional public tunnel (EXPOSE=pinggy|bore|ngrok|cloudflared). Prints its
+  // own URL + QR once the tunnel is up.
+  startExpose(PORT, appUrlFromBase);
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

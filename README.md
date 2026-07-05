@@ -56,6 +56,7 @@ Environment variables:
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
 | `BIND` | `all` | Interface to listen on: `all` (0.0.0.0), `tailscale`, `lan`, or a literal IP |
+| `EXPOSE` | – | Public tunnel: `pinggy`, `bore`, `ngrok`, or `cloudflared` (spawns that CLI) |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
@@ -69,6 +70,23 @@ default `BIND=all` is fine. On an untrusted network (office, public Wi-Fi) use
 `BIND=tailscale`: the port stays invisible to the LAN and is reachable only over
 the private, WireGuard-encrypted tailnet — so the token never travels in the
 clear and nothing can port-scan you into an agent session.
+
+The bearer token is persisted at `~/.config/even-better/token` (mode 0600) so you
+scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
+
+## Remote access (off your Wi-Fi)
+
+- **Tailscale (recommended)** — private, WireGuard-encrypted, stable IP, no time
+  limit. Nothing exposed publicly. Run with `BIND=tailscale` and scan the
+  `Tailscale:` QR. Best for regular use.
+- **`EXPOSE=pinggy`** — quick public tunnel over the built-in `ssh`, zero install,
+  supports SSE. Free tunnels rotate every 60 min. Good for a one-off share.
+  `bore`/`ngrok` also work (`bore` is plain HTTP; `ngrok` needs an authtoken).
+- **Cloudflare** — its *quick* tunnel (`EXPOSE=cloudflared`, trycloudflare.com)
+  **does not support SSE**, so live output will not stream. To use Cloudflare,
+  set up a **named tunnel** pointed at `localhost:<PORT>` (SSE works, and you can
+  put Cloudflare Access auth in front of a stable hostname); then connect via
+  `https://<your-hostname>?token=<TOKEN>&defaultProvider=claude`.
 
 ## Protocol surface (even-terminal compatible)
 
