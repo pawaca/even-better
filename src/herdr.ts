@@ -208,6 +208,15 @@ export async function typeAndSubmit(paneId: string, text: string): Promise<void>
   await sendInput(paneId, "", ["Enter"]);
 }
 
+/** Current agent session id of a pane, if herdr has detected one. */
+export async function paneSessionId(paneId: string): Promise<string | undefined> {
+  const r = await call<{ pane?: { agent_session?: { value?: string } } }>(
+    "pane.get",
+    { pane_id: paneId },
+  );
+  return r.pane?.agent_session?.value ?? undefined;
+}
+
 export async function paneExists(paneId: string): Promise<boolean> {
   try {
     await call("pane.get", { pane_id: paneId });

@@ -2,6 +2,7 @@ import {
   agentList,
   paneRead,
   paneExists,
+  paneSessionId,
   sendInput,
   subscribe,
   typeAndSubmit,
@@ -9,7 +10,12 @@ import {
   type SubscribeHandle,
 } from "./herdr.js";
 import { emit } from "./sse.js";
-import { findSessionFile, TranscriptTail } from "./transcript.js";
+import {
+  findSessionFile,
+  summarizeTool,
+  TranscriptTail,
+  type TranscriptEvent,
+} from "./transcript.js";
 import {
   classifyMenu,
   diffNewLines,
@@ -91,9 +97,11 @@ export class PaneBridge {
   private tail: TranscriptTail | null = null;
   private tailTimer: NodeJS.Timeout | null = null;
   private tailing = false;
-  private lastProse = "";
+  private sessionProbeTimer: NodeJS.Timeout | null = null;
   private lastProseBlock = "";
-  private droppingProse = false;
+  private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>();
+  private turnInputTokens = 0;
+  private turnOutputTokens = 0;
 
   constructor(info: AgentInfo) {
     this.paneId = info.pane_id;
@@ -131,19 +139,48 @@ export class PaneBridge {
       (event, data) => this.onHerdrEvent(event, data),
       () => this.onSubClosed(),
     );
-    this.startPolling();
+    // Transcript tail is the primary content channel; screen polling is the
+    // fallback for panes without a readable transcript (codex, plain agents).
     this.startTranscriptTail();
+    if (!this.tail) {
+      this.startPolling();
+      this.startSessionProbe();
+    }
+  }
+
+  /** A fresh claude pane has no session id until its first prompt lands.
+   *  Probe herdr every 2s so the bridge switches from screen fallback to the
+   *  transcript as soon as the session exists. */
+  private startSessionProbe(): void {
+    if (this.sessionProbeTimer || this.tail || this.disposed) return;
+    if (this.agent !== "claude") return;
+    this.sessionProbeTimer = setInterval(() => {
+      if (this.tail || this.disposed) {
+        if (this.sessionProbeTimer) clearInterval(this.sessionProbeTimer);
+        this.sessionProbeTimer = null;
+        return;
+      }
+      void paneSessionId(this.paneId)
+        .then((id) => {
+          if (!id) return;
+          this.agentSessionId = id;
+          this.startTranscriptTail();
+          if (this.tail) {
+            this.stopPolling();
+            if (this.sessionProbeTimer) clearInterval(this.sessionProbeTimer);
+            this.sessionProbeTimer = null;
+          }
+        })
+        .catch(() => {});
+    }, 2000);
   }
 
   /** Public hook for the manager to (re)try tailing once a session id shows up. */
   startTailIfNeeded(): void {
     this.startTranscriptTail();
+    if (this.tail) this.stopPolling();
   }
 
-  /** Prose comes from the agent's session transcript (jsonl) — the screen
-   *  stops rendering intermediate text in long tool-heavy turns, but the
-   *  transcript never misses a message. Screen polling still covers tool
-   *  activity, menus, and non-claude agents. */
   private startTranscriptTail(): void {
     if (this.tailTimer || this.disposed) return;
     if (this.agent !== "claude" || !this.agentSessionId) return;
@@ -160,8 +197,8 @@ export class PaneBridge {
       this.tailing = true;
       this.tail
         .readNew()
-        .then((blocks) => {
-          for (const block of blocks) this.onProse(block);
+        .then((events) => {
+          for (const ev of events) this.onTranscriptEvent(ev);
         })
         .catch(() => {
           // transient read error; next tick retries
@@ -172,31 +209,75 @@ export class PaneBridge {
     }, 500);
   }
 
-  private onProse(text: string): void {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    // remember for screen-echo suppression (rendered copies of the same prose)
-    this.lastProse = (this.lastProse + "\n" + trimmed).slice(-8000);
-    this.lastProseBlock = trimmed;
-    if (STREAM_LOG) {
-      console.log(paint("32", `► send ${this.paneId} prose ${trimmed.length} chars`));
+  private onTranscriptEvent(ev: TranscriptEvent): void {
+    if (ev.usage) {
+      this.turnInputTokens += ev.usage.input;
+      this.turnOutputTokens += ev.usage.output;
     }
-    emit(this.paneId, { type: "text_delta", text: trimmed + "\n" });
+    switch (ev.kind) {
+      case "user_prompt": {
+        const text = (ev.text ?? "").trim();
+        if (!text) return;
+        // prompts we injected ourselves were already emitted by prompt()
+        const norm = text.replace(/\s+/g, "");
+        if (
+          this.recentTyped &&
+          Date.now() - this.recentTypedAt < 120_000 &&
+          norm === this.recentTyped
+        ) {
+          return;
+        }
+        if (STREAM_LOG) console.log(paint("36", `► send ${this.paneId} user_prompt(terminal) ${text.slice(0, 60)}`));
+        emit(this.paneId, { type: "user_prompt", text });
+        return;
+      }
+      case "text": {
+        const text = (ev.text ?? "").trim();
+        if (!text) return;
+        this.lastProseBlock = text;
+        if (STREAM_LOG) console.log(paint("32", `► send ${this.paneId} text ${text.length} chars`));
+        emit(this.paneId, { type: "text_delta", text: text + "\n" });
+        return;
+      }
+      case "tool_use": {
+        if (!ev.toolId || !ev.toolName) return;
+        this.pendingTools.set(ev.toolId, {
+          name: ev.toolName,
+          input: ev.input ?? {},
+        });
+        if (this.pendingTools.size > 100) {
+          const first = this.pendingTools.keys().next().value;
+          if (first) this.pendingTools.delete(first);
+        }
+        const summary = summarizeTool(ev.toolName, ev.input ?? {});
+        if (STREAM_LOG) console.log(paint("32", `► send ${this.paneId} tool_start ${summary.slice(0, 80)}`));
+        emit(this.paneId, { type: "tool_start", name: ev.toolName, toolId: ev.toolId });
+        emit(this.paneId, { type: "text_delta", text: `⏺ ${summary}\n` });
+        return;
+      }
+      case "tool_result": {
+        if (!ev.toolId) return;
+        const pending = this.pendingTools.get(ev.toolId);
+        if (!pending) return;
+        this.pendingTools.delete(ev.toolId);
+        const output = (ev.text ?? "").slice(0, 1500);
+        emit(this.paneId, {
+          type: "tool_end",
+          name: pending.name,
+          toolId: ev.toolId,
+          summary: summarizeTool(pending.name, pending.input),
+          detail: { input: pending.input, output },
+        });
+        return;
+      }
+    }
   }
 
-  /** True when a screen line is a rendered copy of prose already delivered
-   *  from the transcript (normalized: whitespace collapsed, table borders
-   *  mapped back to pipes). */
-  private isProseEcho(line: string): boolean {
-    if (!this.lastProse) return false;
-    const norm = line
-      .replace(/^⏺\s*/, "")
-      .replace(/[│┃]/g, "|")
-      .replace(/[─═┌┬┐└┴┘├┼┤]/g, "")
-      .replace(/\s+/g, "");
-    if (norm.length < 6) return false;
-    const hay = this.lastProse.replace(/\s+/g, "").replace(/\|/g, "|");
-    return hay.includes(norm);
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
   }
 
   private startPolling(): void {
@@ -300,35 +381,6 @@ export class PaneBridge {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      // When the transcript tail delivers prose, drop the screen-rendered
-      // copies entirely (regardless of arrival order — the substring check in
-      // isProseEcho only works when the jsonl copy arrives first). A prose
-      // block = "⏺ <text>" where <text> is not a tool call / chrome line,
-      // plus its wrapped continuation lines up to the next marker.
-      if (this.tail) {
-        const isMarker =
-          /^⏺\s+[A-Z][\w-]*\(/.test(t) || // tool call "⏺ Bash(…)"
-          /^\s*⎿/.test(line) || // tool result
-          /^\$\s/.test(t) || // command echo
-          /^⏺?\s*(Running|Ran|Reading|Read|Searched|Searching|Editing|Edited|Writing|Wrote|Fetching|Fetched)\b/.test(t);
-        if (/^⏺\s/.test(t) && !isMarker) {
-          this.droppingProse = true;
-          if (STREAM_LOG) console.log(paint("33", `✂ drop(prose→jsonl) ${this.paneId}: ${t.slice(0, 90)}`));
-          continue;
-        }
-        if (this.droppingProse) {
-          if (isMarker) {
-            this.droppingProse = false; // marker line: fall through, emit
-          } else {
-            if (STREAM_LOG) console.log(paint("33", `✂ drop(prose→jsonl) ${this.paneId}: ${t.slice(0, 90)}`));
-            continue;
-          }
-        }
-      }
-      if (this.isProseEcho(line)) {
-        if (STREAM_LOG) console.log(paint("33", `✂ drop(prose-echo) ${this.paneId}: ${t.slice(0, 90)}`));
-        continue;
-      }
       // Dedupe key ignores the leading "⏺" bullet (claude renders the same
       // status line both standalone and bullet-prefixed) and any trailing
       // elapsed-time suffix (in-progress commands re-render every second as
@@ -372,7 +424,9 @@ export class PaneBridge {
     if (next === "busy" && prev !== "busy") {
       if (!this.turnStartMs) this.turnStartMs = Date.now();
       this.recentlyEmitted.clear(); // new turn — allow repeats of past content
-      this.droppingProse = false;
+      this.turnInputTokens = 0;
+      this.turnOutputTokens = 0;
+      this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
       emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
     }
 
@@ -444,6 +498,12 @@ export class PaneBridge {
   private async emitTurnResult(): Promise<void> {
     emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
     let text = "";
+    if (this.tail) {
+      // The herdr idle event can beat the 500ms tail tick: the final text
+      // block may not have been read from the transcript yet. Give the tail
+      // two ticks to drain before snapshotting the answer.
+      await new Promise((r) => setTimeout(r, 1100));
+    }
     if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
       text = this.lastProseBlock;
@@ -467,8 +527,8 @@ export class PaneBridge {
       provider: this.provider,
       turns: 0,
       durationMs,
-      inputTokens: 0,
-      outputTokens: 0,
+      inputTokens: this.turnInputTokens,
+      outputTokens: this.turnOutputTokens,
     });
   }
 
@@ -563,6 +623,7 @@ export class PaneBridge {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.tailTimer) clearInterval(this.tailTimer);
+    if (this.sessionProbeTimer) clearInterval(this.sessionProbeTimer);
     this.sub?.close();
     console.log(`[bridge ${this.paneId}] disposed`);
   }
