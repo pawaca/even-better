@@ -72,6 +72,10 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   Widgets (status/stats/task_progress) bypass the queue.
 - **Interaction timeouts do not auto-deny.** A blocked pane stays `awaiting`
   until the user answers or the menu clears — no SDK forces a decision on us.
+- **Idle is debounced (`IDLE_GRACE_MS`).** herdr flips to idle transiently
+  between tool calls (its prompt box flashes), so committing immediately blanks
+  the thinking indicator and fires a spurious `result` mid-turn. Only commit
+  turn-end after idle persists; a busy signal or content activity cancels it.
 
 ## even-terminal protocol: four consumption semantics
 

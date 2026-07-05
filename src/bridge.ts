@@ -43,6 +43,11 @@ const POLL_INTERVAL_MS = 300;
 // character count adapts to the backlog (see streamTick) so long answers still
 // finish in a bounded time. Tune STREAM_TICK_MS for overall speed.
 const STREAM_TICK_MS = 100;
+// How long herdr must stay "idle" before we treat a turn as ended. herdr flips
+// to idle transiently between tool calls (prompt box flashes), so committing
+// immediately blanks the thinking indicator and fires a spurious result. Any
+// busy signal or content activity within this window cancels the pending idle.
+const IDLE_GRACE_MS = 3500;
 
 interface TodoItem {
   status?: string;
@@ -106,6 +111,7 @@ export class PaneBridge {
   private polling = false;
   private sessionProbeTimer: NodeJS.Timeout | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
 
   private recentTyped = ""; // our injected prompt, to suppress its echo in the timeline
   private recentTypedAt = 0;
@@ -346,6 +352,11 @@ export class PaneBridge {
    *  source-, and heuristic-agnostic — a `say` is a `say` whether it came from
    *  the jsonl or a scraped screen. */
   private onAgentEvent(e: AgentEvent): void {
+    // New content while an idle is pending means the agent is still working
+    // (herdr's idle was a between-tools blip); cancel it so the indicator holds.
+    if (this.idleTimer && (e.t === "say" || e.t === "tool" || e.t === "toolResult")) {
+      this.cancelIdle();
+    }
     switch (e.t) {
       case "prompt": {
         const text = e.text.trim();
@@ -449,29 +460,56 @@ export class PaneBridge {
   // ── status transitions ───────────────────────────────
 
   private onStatus(raw: string): void {
-    const prev = this.state;
     const next = mapStatus(raw as AgentInfo["agent_status"]);
-    console.log(`[bridge ${this.paneId}] status ${prev} -> ${next} (herdr: ${raw})`);
-    this.state = next;
+    console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (herdr: ${raw})`);
 
-    if (next === "busy" && prev !== "busy") {
-      if (!this.turnStartMs) this.turnStartMs = Date.now();
-      this.screen?.resetTurn(); // new turn — allow repeats of past content
-      this.clearStream(); // drop any stale content from a prior turn
-      this.turnInputTokens = 0;
-      this.turnOutputTokens = 0;
-      this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
-      emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
-      this.startStats();
+    if (next === "busy") {
+      // Any working signal cancels a pending idle — that idle was just a blip
+      // between tool operations, not a real turn end.
+      this.cancelIdle();
+      if (this.state !== "busy") this.enterBusyTurn();
+      return;
     }
 
-    if (next === "awaiting" && prev !== "awaiting") {
-      void this.emitBlockedMenu();
+    if (next === "awaiting") {
+      this.cancelIdle();
+      if (this.state !== "awaiting") {
+        this.state = "awaiting";
+        void this.emitBlockedMenu();
+      }
+      return;
     }
 
-    if (next === "idle" && prev !== "idle") {
+    // next === "idle": DEBOUNCE. herdr reports a transient idle whenever the
+    // pane isn't showing the working spinner (e.g. its prompt box flashes
+    // between tool calls), which would otherwise blank the thinking indicator
+    // and fire a spurious result mid-turn. Only commit the turn end after idle
+    // persists for IDLE_GRACE_MS; a busy signal or content activity cancels it.
+    if (this.state === "idle" || this.idleTimer) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this.state = "idle";
       this.stopStats();
       void this.emitTurnResult();
+    }, IDLE_GRACE_MS);
+  }
+
+  private enterBusyTurn(): void {
+    if (!this.turnStartMs) this.turnStartMs = Date.now();
+    this.screen?.resetTurn(); // new turn — allow repeats of past content
+    this.clearStream(); // drop any stale content from a prior turn
+    this.turnInputTokens = 0;
+    this.turnOutputTokens = 0;
+    this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
+    this.state = "busy";
+    emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
+    this.startStats();
+  }
+
+  private cancelIdle(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
     }
   }
 
@@ -634,6 +672,7 @@ export class PaneBridge {
 
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
+    this.cancelIdle(); // a new prompt overrides any pending idle from before
     this.screen?.resetTurn(); // new turn — allow repeats of past content
     this.clearStream(); // drop any stale content from a prior turn
     // remember our injected prompt so both the timeline's record of it (core)
@@ -796,6 +835,7 @@ export class PaneBridge {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.clearProbe();
     this.stopStats();
+    this.cancelIdle();
     this.clearStream();
     this.timeline?.dispose();
     this.sub?.close();
