@@ -16,7 +16,7 @@ import { logEvent } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { ScreenTimeline } from "./screen-timeline.js";
-import { chunkForGlasses, renderForGlasses } from "./render.js";
+import { renderForGlasses } from "./render.js";
 import {
   classifyMenu,
   extractResult,
@@ -38,9 +38,11 @@ const OUTPUT_WINDOW_LINES = 120;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
-// Gap between paced content events. The first item in a burst goes out
-// immediately; the rest follow one per PACE_MS so long answers are readable.
-const PACE_MS = 1000;
+// Text is streamed out a few characters at a time on this cadence, so it
+// appears to type in smoothly instead of arriving in one burst. The per-tick
+// character count adapts to the backlog (see streamTick) so long answers still
+// finish in a bounded time. Tune STREAM_TICK_MS for overall speed.
+const STREAM_TICK_MS = 100;
 
 interface TodoItem {
   status?: string;
@@ -64,6 +66,9 @@ export function todoProgress(
       : "";
   return { completed, total, current };
 }
+
+// A text item streams out `chars` from `pos`; an event item is emitted whole.
+type StreamItem = { chars: string[]; pos: number } | { event: object };
 
 export type AppState = "idle" | "busy" | "awaiting";
 
@@ -113,11 +118,10 @@ export class PaneBridge {
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
 
-  // Paced content queue: content events (text_delta, tool_start) are released
-  // one every PACE_MS so a long answer reveals gradually instead of arriving in
-  // a burst too fast to read. Widgets (status/stats/task_progress) bypass this;
-  // result/idle wait for it to drain (see emitTurnResult).
-  private outQueue: object[] = [];
+  // Streaming output queue: text items type out a few characters per tick;
+  // event items (tool_start) are released whole in order. Widgets
+  // (status/stats/task_progress) bypass this; result/idle wait for it to drain.
+  private streamQueue: StreamItem[] = [];
   private pacer: NodeJS.Timeout | null = null;
 
   constructor(info: AgentInfo) {
@@ -217,35 +221,56 @@ export class PaneBridge {
     }
   }
 
-  /** Queue a content event for paced release (first goes out now, rest at
-   *  PACE_MS intervals). Keeps ordering across say chunks and tool lines. */
-  private paced(msg: object): void {
-    this.outQueue.push(msg);
-    if (!this.pacer) this.pumpQueue();
+  /** Queue text to type out gradually. Split by code point so a surrogate pair
+   *  (emoji) is never cut across two frames. */
+  private streamText(text: string): void {
+    if (!text) return;
+    this.streamQueue.push({ chars: [...text], pos: 0 });
+    if (!this.pacer) this.streamTick();
   }
 
-  private pumpQueue(): void {
-    const msg = this.outQueue.shift();
-    if (!msg) {
+  /** Queue a whole event (e.g. tool_start) to release in order with the text. */
+  private streamEvent(msg: object): void {
+    this.streamQueue.push({ event: msg });
+    if (!this.pacer) this.streamTick();
+  }
+
+  private pendingChars(): number {
+    let n = 0;
+    for (const it of this.streamQueue) if ("chars" in it) n += it.chars.length - it.pos;
+    return n;
+  }
+
+  private streamTick(): void {
+    const head = this.streamQueue[0];
+    if (!head) {
       this.pacer = null;
       return;
     }
-    emit(this.paneId, msg);
-    // Speed up when a backlog builds so the glasses never fall far behind the
-    // agent; keep the readable pace when the flow is calm.
-    const delay = this.outQueue.length > 5 ? 300 : PACE_MS;
-    this.pacer = setTimeout(() => this.pumpQueue(), delay);
+    if ("event" in head) {
+      emit(this.paneId, head.event);
+      this.streamQueue.shift();
+    } else {
+      // Chars per tick scale with the backlog so a long answer stays bounded
+      // (~10s) while a short one types gently; never split by less than 4.
+      const n = Math.min(30, Math.max(4, Math.ceil(this.pendingChars() / 120)));
+      const slice = head.chars.slice(head.pos, head.pos + n).join("");
+      head.pos += n;
+      emit(this.paneId, { type: "text_delta", text: slice });
+      if (head.pos >= head.chars.length) this.streamQueue.shift();
+    }
+    this.pacer = setTimeout(() => this.streamTick(), STREAM_TICK_MS);
   }
 
-  /** Wait until the paced queue has fully drained (used before result/idle). */
-  private async drainPaced(): Promise<void> {
-    while (this.outQueue.length > 0 || this.pacer) {
+  /** Wait until the stream queue has fully drained (before result/idle). */
+  private async drainStream(): Promise<void> {
+    while (this.streamQueue.length > 0 || this.pacer) {
       await new Promise((r) => setTimeout(r, 60));
     }
   }
 
-  private clearPaced(): void {
-    this.outQueue = [];
+  private clearStream(): void {
+    this.streamQueue = [];
     if (this.pacer) {
       clearTimeout(this.pacer);
       this.pacer = null;
@@ -342,12 +367,10 @@ export class PaneBridge {
         const text = e.text.trim();
         if (!text) return;
         this.lastProseBlock = text; // keep the raw text for the turn result
-        // Split a long block into chunks and pace them out so the glasses
-        // reveal it gradually instead of in one burst too fast to read.
-        const rendered = renderForGlasses(text);
-        for (const chunk of chunkForGlasses(rendered)) {
-          this.paced({ type: "text_delta", text: chunk + "\n" });
-        }
+        // Stream the whole rendered block character-by-character (see
+        // streamText) so it types in smoothly with no artificial line breaks;
+        // the trailing "\n" only separates this block from the next.
+        this.streamText(renderForGlasses(text) + "\n");
         return;
       }
       case "tool": {
@@ -370,7 +393,7 @@ export class PaneBridge {
           const first = this.pendingTools.keys().next().value;
           if (first) this.pendingTools.delete(first);
         }
-        this.paced({
+        this.streamEvent({
           type: "tool_start",
           name: e.name,
           toolId: e.id,
@@ -425,7 +448,7 @@ export class PaneBridge {
     if (next === "busy" && prev !== "busy") {
       if (!this.turnStartMs) this.turnStartMs = Date.now();
       this.screen?.resetTurn(); // new turn — allow repeats of past content
-      this.clearPaced(); // drop any stale content from a prior turn
+      this.clearStream(); // drop any stale content from a prior turn
       this.turnInputTokens = 0;
       this.turnOutputTokens = 0;
       this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
@@ -567,7 +590,7 @@ export class PaneBridge {
     // Let the paced content finish streaming before the result/idle close it
     // out — otherwise idle would land before the last chunks and the app would
     // get stuck showing activity again.
-    await this.drainPaced();
+    await this.drainStream();
     let text = "";
     if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
@@ -603,7 +626,7 @@ export class PaneBridge {
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
     this.screen?.resetTurn(); // new turn — allow repeats of past content
-    this.clearPaced(); // drop any stale content from a prior turn
+    this.clearStream(); // drop any stale content from a prior turn
     // remember our injected prompt so both the timeline's record of it (core)
     // and its wrapped screen echo (ScreenTimeline) are suppressed as duplicates.
     this.recentTyped = text.replace(/\s+/g, "");
@@ -764,7 +787,7 @@ export class PaneBridge {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.clearProbe();
     this.stopStats();
-    this.clearPaced();
+    this.clearStream();
     this.timeline?.dispose();
     this.sub?.close();
     console.log(`[bridge ${this.paneId}] disposed`);

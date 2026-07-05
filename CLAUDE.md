@@ -64,9 +64,11 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   the distinct tool color and carries the command as `summary`; `tool_end` is
   dropped because the app labels it "tool end:" (noise). Still track
   `pendingTools` for permission descriptions.
-- **Content events are paced.** `text_delta`/`tool_start` go through a queue
-  (`paced()`, one per `PACE_MS`) so long answers reveal gradually; `result`/idle
-  wait for it to drain. Widgets (status/stats/task_progress) bypass the queue.
+- **Output is streamed, not chunked.** Text types out a few code points per
+  `STREAM_TICK_MS` (`streamText()`, adaptive rate so long answers stay bounded)
+  so it reveals smoothly with no artificial line breaks; `tool_start` events
+  interleave in order (`streamEvent()`). `result`/idle wait for `drainStream()`.
+  Widgets (status/stats/task_progress) bypass the queue.
 - **Interaction timeouts do not auto-deny.** A blocked pane stays `awaiting`
   until the user answers or the menu clears — no SDK forces a decision on us.
 

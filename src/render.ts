@@ -111,26 +111,3 @@ export function renderForGlasses(text: string): string {
   return stripBoxBorders(reflowTables(text));
 }
 
-/**
- * Split a long rendered block into smaller pieces so the glasses show it
- * progressively instead of one large blob arriving all at once. Breaks on
- * paragraph boundaries, packing lines up to ~`max` chars per chunk without
- * splitting mid-line (so a reflowed table row is never cut). Short text returns
- * as a single chunk.
- */
-export function chunkForGlasses(text: string, max = 240): string[] {
-  if (text.length <= max) return [text];
-  const lines = text.split("\n");
-  const chunks: string[] = [];
-  let buf = "";
-  for (const line of lines) {
-    if (buf && buf.length + line.length + 1 > max) {
-      chunks.push(buf);
-      buf = "";
-    }
-    buf = buf ? `${buf}\n${line}` : line;
-    // a single line longer than max still ships whole (never split a line)
-  }
-  if (buf) chunks.push(buf);
-  return chunks;
-}
