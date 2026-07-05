@@ -16,6 +16,7 @@ import { logEvent } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { ScreenTimeline } from "./screen-timeline.js";
+import { renderForGlasses } from "./render.js";
 import {
   classifyMenu,
   extractResult,
@@ -246,8 +247,8 @@ export class PaneBridge {
         }
         const text = e.text.trim();
         if (!text) return;
-        this.lastProseBlock = text;
-        emit(this.paneId, { type: "text_delta", text: text + "\n" });
+        this.lastProseBlock = text; // keep the raw text for the turn result
+        emit(this.paneId, { type: "text_delta", text: renderForGlasses(text) + "\n" });
         return;
       }
       case "tool": {
@@ -472,7 +473,7 @@ export class PaneBridge {
     emit(this.paneId, {
       type: "result",
       success: true,
-      text,
+      text: renderForGlasses(text),
       sessionId: this.paneId,
       costUsd: 0,
       provider: this.provider,
