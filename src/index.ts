@@ -108,7 +108,7 @@ api.get("/info", async (_req, res) => {
   res.json({
     account: {},
     model: model || "Unknown",
-    version: `${VERSION} (herdr-bridge)`,
+    version: `${VERSION} (even-better)`,
     provider: "claude",
   });
 });

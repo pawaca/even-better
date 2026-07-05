@@ -39,6 +39,29 @@ const OUTPUT_WINDOW_LINES = 120;
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
 
+interface TodoItem {
+  status?: string;
+  content?: string;
+  activeForm?: string;
+}
+
+/** Map a TodoWrite tool input to the app's task_progress widget fields. */
+export function todoProgress(
+  input: Record<string, unknown>,
+): { completed: number; total: number; current: string } | null {
+  const todos = Array.isArray(input.todos) ? (input.todos as TodoItem[]) : [];
+  const total = todos.length;
+  if (!total) return null;
+  const completed = todos.filter((t) => t?.status === "completed").length;
+  const active = todos.find((t) => t?.status === "in_progress");
+  const current = active
+    ? (active.content ?? active.activeForm ?? "")
+    : completed === total
+      ? "All done"
+      : "";
+  return { completed, total, current };
+}
+
 export type AppState = "idle" | "busy" | "awaiting";
 
 function mapStatus(s: AgentInfo["agent_status"]): AppState {
@@ -74,6 +97,7 @@ export class PaneBridge {
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
   private sessionProbeTimer: NodeJS.Timeout | null = null;
+  private statsTimer: NodeJS.Timeout | null = null;
 
   private recentTyped = ""; // our injected prompt, to suppress its echo in the timeline
   private recentTypedAt = 0;
@@ -183,6 +207,31 @@ export class PaneBridge {
     }
   }
 
+  /** While a turn runs, push a live elapsed/token counter every 10s. The app
+   *  renders `running_stats` as a single widget it overwrites in place. */
+  private startStats(): void {
+    this.stopStats();
+    this.statsTimer = setInterval(() => {
+      if (this.state !== "busy") {
+        this.stopStats();
+        return;
+      }
+      emit(this.paneId, {
+        type: "running_stats",
+        durationMs: this.turnStartMs ? Date.now() - this.turnStartMs : 0,
+        inputTokens: this.turnInputTokens,
+        outputTokens: this.turnOutputTokens,
+      });
+    }, 10_000);
+  }
+
+  private stopStats(): void {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
   /** Manager hook: a session id became known (e.g. from agent.list). Upgrade to
    *  the transcript if we are still on the screen fallback. */
   noteSessionId(id: string): void {
@@ -256,14 +305,21 @@ export class PaneBridge {
           this.turnInputTokens += e.usage.input;
           this.turnOutputTokens += e.usage.output;
         }
+        // TodoWrite drives the app's live progress bar, not a tool bubble.
+        if (e.name === "TodoWrite") {
+          const progress = todoProgress(e.input);
+          if (progress) emit(this.paneId, { type: "task_progress", ...progress });
+          return; // no start/end correlation for todos
+        }
         this.pendingTools.set(e.id, { name: e.name, input: e.input });
         if (this.pendingTools.size > 100) {
           const first = this.pendingTools.keys().next().value;
           if (first) this.pendingTools.delete(first);
         }
-        const summary = summarizeTool(e.name, e.input);
+        // The app renders the tool from tool_start → tool_end (keyed by toolId),
+        // updating one bubble in place. Do NOT also emit a text_delta for it —
+        // that would append the tool a second time as plain text.
         emit(this.paneId, { type: "tool_start", name: e.name, toolId: e.id });
-        emit(this.paneId, { type: "text_delta", text: `⏺ ${summary}\n` });
         return;
       }
       case "toolResult": {
@@ -324,6 +380,7 @@ export class PaneBridge {
       this.turnOutputTokens = 0;
       this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
       emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
+      this.startStats();
     }
 
     if (next === "awaiting" && prev !== "awaiting") {
@@ -331,6 +388,7 @@ export class PaneBridge {
     }
 
     if (next === "idle" && prev !== "idle") {
+      this.stopStats();
       void this.emitTurnResult();
     }
   }
@@ -496,9 +554,15 @@ export class PaneBridge {
     this.screen?.noteTyped(text);
     await typeAndSubmit(this.paneId, text);
     if (this.state !== "busy") {
+      // Optimistic busy for immediate feedback — herdr's status event would
+      // otherwise see prev==busy and skip the turn-start work, so do it here.
       this.turnStartMs = Date.now();
       this.state = "busy";
+      this.turnInputTokens = 0;
+      this.turnOutputTokens = 0;
+      this.lastProseBlock = "";
       emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
+      this.startStats();
     }
   }
 
@@ -642,6 +706,7 @@ export class PaneBridge {
     this.disposed = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.clearProbe();
+    this.stopStats();
     this.timeline?.dispose();
     this.sub?.close();
     console.log(`[bridge ${this.paneId}] disposed`);
