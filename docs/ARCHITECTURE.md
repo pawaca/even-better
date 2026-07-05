@@ -1,320 +1,235 @@
 # Architecture
 
-This document proposes the target framework for herdr-even-bridge. It is a
-design RFC, not a description of the current code — see "Migration" for how the
-two relate. The goal is a bridge whose four axes of change (multiplexer, agent,
-input parsing, output rendering) are independent, swappable seams rather than
-branches inside one class.
+A design note for herdr-even-bridge. It states the target shape and, just as
+importantly, what it deliberately does *not* abstract. It supersedes an earlier
+five-seam draft that over-built the output side; see "What I changed my mind
+about" at the end.
 
-## The problem with the current shape
+## What this system actually is
 
-Today all logic lives in `PaneBridge` (`src/bridge.ts`, ~800 lines). It reaches
-directly into the herdr socket (17 call sites), parses Claude Code's jsonl
-inline, scrapes the screen inline, and emits the even-terminal wire protocol
-inline (15 call sites). Every one of the four things we expect to vary is
-hard-wired into the same object:
+One sentence: **it turns a live coding-agent-in-a-terminal into a
+provider-neutral event stream, and renders that stream onto a tiny remote
+display while relaying input back.**
 
-- Adding **cmux** means threading a second socket dialect through every call.
-- Adding **codex** means branching on `agent === "codex"` in a dozen places.
-- Improving **glasses rendering** (tables reflow badly on 576×288) has no home —
-  output is emitted as raw `text_delta` at the point of parsing.
-- The **input model** is implicit: jsonl shapes leak straight into wire events.
-
-The refactor is not about deleting working code — the parsing/dedup/permission
-logic is hard-won and correct. It is about giving each concern a named seam so
-the next capability is an *added file*, not an edit to the god class.
-
-## Layered pipeline
+That sentence names the real center of the design — the *event stream*.
+Everything upstream of it exists to **produce** the stream; everything
+downstream exists to **consume** it. So the right decomposition is not "four
+coequal seams," it is a **spine with a producer side and a consumer side**, and
+seams belong only where a second real implementation is coming.
 
 ```
-┌────────────┐   PaneRef/status/keys   ┌──────────────┐   AgentEvent   ┌───────────┐   DisplayOp   ┌────────────┐
-│ Multiplexer │ ──────────────────────> │ AgentAdapter │ ─────────────> │  Session  │ ────────────> │  Renderer  │
-│  herdr      │ <────────────────────── │  claude      │                │  (core)   │               │  glasses   │
-│  cmux       │      readScreen         │  codex       │                │           │               └─────┬──────┘
-└────────────┘                          └──────────────┘                └───────────┘                     │ DisplayOp
-                                                                                                          ▼
-                                                                                                   ┌────────────┐
-                                                                                                   │ Transport  │
-                                                                                                   │ even-term  │
-                                                                                                   └────────────┘
+        PRODUCER                    SPINE                    CONSUMER
+  ┌───────────────────┐      ┌────────────────┐       ┌──────────────────┐
+  │ Multiplexer × Agent│ ───► │   AgentEvent   │  ───► │       Sink       │
+  │  = Source          │      │   (the spine)  │       │  render → app    │
+  └───────────────────┘ ◄─── └────────────────┘  ◄─── └──────────────────┘
+     prompt / respond / interrupt          replay / status
 ```
 
-Data flows left to right; key injection (permission responses, prompts) flows
-right to left through the same interfaces. The **Session** in the middle is
-provider-agnostic: it knows about turns, dedup, and the interaction lifecycle,
-but nothing about herdr, jsonl, or SSE.
+## The spine: a provider-neutral event vocabulary
 
-## Seam 1 — Multiplexer (herdr → cmux → …)
-
-"The thing that hosts panes and lets you observe and drive them." herdr and
-cmux both expose a local socket with the same concepts: panes, per-pane agent
-status detection, screen read, key injection.
+This is the most important artifact and the smallest. Get it right and both
+sides fall out of it. Two channels: a *timeline* of things that happened, and a
+*control* channel for live state and interaction (which are request/response,
+not log entries).
 
 ```ts
-interface Multiplexer {
-  readonly name: string;                       // "herdr" | "cmux"
+type AgentEvent =                                    // the timeline
+  | { t: "prompt";     text: string }                // a user turn (typed anywhere)
+  | { t: "say";        text: string; usage?: Usage } // assistant prose
+  | { t: "think";      text: string }                // reasoning (render-optional)
+  | { t: "tool";       id: string; name: string; input: JsonObject }
+  | { t: "toolResult"; id: string; output: string; ok: boolean };
+
+type Signal =                                        // the control channel
+  | { t: "state";       state: "busy" | "idle" | "blocked" }
+  | { t: "interaction"; req: Interaction };          // awaits a respond()
+```
+
+Why this is the center: a `say` is a `say` whether it came from Claude's jsonl
+or codex's session log or a scraped screen. The moment events are in this shape,
+nothing downstream needs to know the provider. Turn tracking, token totals,
+rendering, the app protocol — all speak only this.
+
+## Producer side: one seam that composes two orthogonal concerns
+
+A **Source** is "one agent, in one pane, presented as a live event stream plus a
+command sink." It is the producer abstraction the core depends on:
+
+```ts
+interface Source {
+  on(cb: (e: AgentEvent | Signal) => void): void;
+  prompt(text: string): Promise<void>;
+  respond(decision: Decision): Promise<void>;   // resolves a pending interaction
+  interrupt(): Promise<void>;
+  dispose(): void;
+}
+```
+
+A Source is *built by composing two genuinely orthogonal things* — and both have
+a real second implementation on the roadmap, which is what earns them interface
+status:
+
+```ts
+interface Multiplexer {                 // pane I/O — herdr today, cmux next
   listPanes(): Promise<PaneRef[]>;
-  watch(paneId: string, h: PaneHandlers): Subscription;
-  readScreen(paneId: string, opts?: ReadOpts): Promise<string>;
-  sendKeys(paneId: string, keys: Key[]): Promise<void>;
-  sendText(paneId: string, text: string): Promise<void>;
-  // Optional capability — not every multiplexer classifies state. Absence
-  // means the AgentAdapter must classify from the screen alone.
-  explainState?(paneId: string): Promise<StateExplanation>;
+  watchStatus(paneId: string, cb: (s: PaneStatus) => void): Sub;
+  read(paneId: string): Promise<string>;
+  keys(paneId: string, seq: Key[]): Promise<void>;
+  explain?(paneId: string): Promise<Explanation>;   // OPTIONAL capability
 }
 
-interface PaneRef {
-  id: string;                 // multiplexer-scoped pane id, e.g. "w1:pQ"
-  agentKind?: string;         // "claude" | "codex" | undefined (plain shell)
-  agentSessionId?: string;    // provider session id once known
-  cwd: string;
-  status: PaneStatus;         // "busy" | "idle" | "blocked" | "unknown"
+interface AgentAdapter {                // interpret one agent — claude today, codex next
+  readonly kind: string;
+  timeline(sessionId: string, mux: Multiplexer, paneId: string): Timeline;
+  readInteraction(ctx: BlockContext): Interaction | null;   // what is the menu
+  keyPlan(i: Interaction, d: Decision): Key[][];            // how to resolve it (ladder)
+  screenHints?: ScreenHints;            // patterns the ScreenTimeline fallback uses
 }
-
-type Key =
-  | { text: string }                    // literal paste
-  | { key: "Enter" | "Escape" | "Down" | "Up" | string };  // named key press
-
-interface StateExplanation { rule?: string; state?: string; evidence?: string; }
 ```
 
-Design notes:
-- **Capabilities are optional methods**, not a lowest-common-denominator core.
-  herdr has `explainState` (its detection-rule engine); a future cmux without
-  one just omits it, and the agent adapter degrades to screen classification.
-- The multiplexer never interprets *content* — it moves bytes and keys and
-  reports coarse status. All meaning is added downstream.
-- `Key[]` sequences are delivered as **separate presses with a gap** by the
-  implementation (bundling `["Down","Enter"]` races the TUI highlight — a bug
-  we already hit). The interface hides that; callers pass intent.
+Three deliberate choices here:
 
-Current `src/herdr.ts` becomes `src/multiplexer/herdr.ts` implementing this;
-`src/multiplexer/cmux.ts` is added later without touching anything else.
+1. **Multiplexer × Agent compose freely.** codex-in-herdr, claude-in-cmux — any
+   pairing. Keeping them as two interfaces (not one "Source impl per combo")
+   means N multiplexers + M agents cost N+M implementations, not N×M.
 
-## Seam 2 — AgentAdapter (claude → codex → …)
+2. **Capabilities are optional methods, not a lowest common denominator.**
+   herdr classifies pane state (`explain?`); a cmux that doesn't just omits it,
+   and the agent falls back to reading the screen. No interface is dumbed down
+   to what every backend can do.
 
-"How to read a given agent's authoritative record, and how to drive its TUI
-interactions." This is where agent-specific knowledge concentrates: where the
-session log lives, how to parse it, what a permission menu looks like, and which
-keys resolve it.
+3. **The best idea in the whole design: `Timeline` unifies jsonl and screen.**
+   Both "tail the jsonl" and "scrape the TUI" are implementations of *produce
+   `AgentEvent`s*:
+
+   ```ts
+   interface Timeline { poll(): Promise<AgentEvent[]>; dispose(): void; }
+   //   TranscriptTimeline  — Claude jsonl: structured, lossless, no heuristics
+   //   ScreenTimeline      — any agent via mux.read(): the diff + volatile-filter
+   //                         + dedup pipeline, used only when no structured log exists
+   ```
+
+   This demotes screen-scraping from "the mechanism" to "the fallback Timeline,"
+   and — crucially — **all the fragile heuristics stop being core concerns.**
+   Dedup, volatile-line filtering, duration normalization are *screen artifacts*;
+   over a clean jsonl Timeline they simply do not run. They live behind
+   `ScreenTimeline` and never touch the spine.
+
+Interaction resolution (`respond`) lives *inside* the Source, because it needs
+both halves: `AgentAdapter.keyPlan` (which keys) and `Multiplexer.keys` +
+`watchStatus` (send them, verify the block cleared, walk the fallback ladder).
+Keeping it in the Source means the core never coordinates mux and agent by hand.
+
+## Consumer side: ONE thing, not two
+
+Here is where I cut the earlier draft. It split output into `Renderer` +
+`Transport` interfaces. That was speculative generality: there is **one** device
+(glasses) and **one** app protocol (even-terminal), with no second consumer
+planned. Two polymorphic interfaces for one implementation is ceremony.
+
+So the consumer is a single **Sink** — "consume the event stream, render for the
+device, push to the app":
 
 ```ts
-interface AgentAdapter {
-  readonly kind: string;                       // "claude"
-  // Preferred lossless source; null when unavailable (→ Session uses a
-  // ScreenTimeline fallback built from Multiplexer.readScreen).
-  openTimeline(sessionId: string): AgentTimeline | null;
-  // Turn a blocked pane into a structured interaction request.
-  interpretBlock(ctx: BlockContext): Interaction | null;
-  // Given the user's decision, produce the key ladder to apply + verify.
-  planResponse(interaction: Interaction, decision: Decision): KeyPlan[];
+interface Sink {
+  handle(e: AgentEvent | Signal): void;
+  attach(client: Client): void;      // SSE subscribe + ring-buffer replay
 }
-
-interface AgentTimeline {
-  poll(): Promise<AgentEvent[]>;   // incremental; only new events since last call
-  close(): void;
-}
-
-interface BlockContext {
-  screen: string;                  // Multiplexer.readScreen()
-  explanation?: StateExplanation;  // Multiplexer.explainState() if available
-  pendingTools: ToolCall[];        // from the timeline — what awaits approval
-}
-
-interface KeyPlan { label: string; steps: Key[]; }  // steps applied then verified
 ```
 
-The Claude adapter owns:
-- `TranscriptTimeline` — the jsonl tailer/parser (current `src/transcript.ts`).
-- `interpretBlock` — combine herdr's rule id (menu *type*), the pending
-  `tool_call` (menu *content*), and screen parse (menu *choices*).
-- `planResponse` — the measured key grammar: Enter confirms the highlighted
-  default, Down+Enter picks option 2, Escape cancels; digits are fallbacks.
-
-A codex adapter later implements the same three methods against `~/.codex/
-sessions` and codex's own menu grammar. The Session does not change.
-
-## Seam 3 — Normalized input model
-
-Both the two problems the user named — "abstract the agent's raw info (jsonl)"
-and "abstract the UI concerns (tools, block interaction)" — resolve to: **the
-timeline is a stream of provider-neutral semantic events, and interaction is a
-separate request/response cycle.**
+Rendering *is* important — the glasses are 576×288 and tables render badly — but
+it is an **internal pipeline of pure transforms**, not a public interface:
 
 ```ts
-type AgentEvent =
-  | { kind: "user_prompt"; text: string }
-  | { kind: "assistant_text"; text: string; usage?: Usage }
-  | { kind: "tool_call"; id: string; name: string; input: JsonObject }
-  | { kind: "tool_result"; id: string; output: string; isError?: boolean }
-  | { kind: "thinking"; text: string }
-  | { kind: "usage"; usage: Usage };
+// render: DisplayBlock → DisplayBlock, composed left to right
+const render = pipe(reflowTables, wrapToWidth(GLASSES_COLS), truncateToolOutput);
 ```
 
-Two timelines produce this same type, so the Session is source-agnostic:
+`reflowTables` (box/markdown table → vertical `key: value`), width-aware
+wrapping, and tool-output collapsing are ordinary functions you unit-test in
+isolation. When a *second* device or protocol actually appears, extract the
+`Renderer`/`Transport` interfaces then — the transforms are already pure, so the
+extraction is mechanical. Not before.
 
-```
-AgentTimeline
-  ├─ TranscriptTimeline   (claude jsonl)   — high fidelity, structured tools
-  └─ ScreenTimeline       (any agent)      — fallback via Multiplexer.readScreen;
-                                             the current diff+volatile-filter+
-                                             normalize pipeline, emitting coarse
-                                             assistant_text / tool_call events
-```
+## The core: a thin orchestrator
 
-This reframes screen-scraping from "the primary mechanism" to "one Timeline
-implementation used when no structured source exists." All the fragile heuristic
-code (multiset diff, volatile filters, duration normalization) lives behind the
-`ScreenTimeline` seam and stops leaking into the core.
-
-**Interaction is not a timeline event** — it is a bounded request/response the
-Session drives, because it needs live multiplexer status + key injection, not a
-log:
-
-```ts
-interface Interaction {
-  kind: "permission" | "question";
-  toolName?: string;          // for permission: which tool
-  description: string;        // structured, from the pending tool_call
-  options: InteractionOption[];
-}
-type Decision = { choice: "allow" | "allow_always" | "deny" } | { optionIndex: number };
-```
-
-## Seam 4 — Renderer + Transport (glasses output)
-
-Output splits into two responsibilities that today are fused:
-
-- **Renderer**: semantic event → device-appropriate *display operations*. This
-  is where 576×288 adaptation lives — the natural home for the table problem.
-- **Transport**: display ops → wire protocol + client fan-out. even-terminal's
-  SSE is one binding.
-
-```ts
-interface Renderer {
-  render(ev: SemanticEvent): DisplayOp[];   // 1 event may expand/collapse to N ops
-}
-
-type DisplayOp =
-  | { op: "text"; text: string }            // already reflowed for the target width
-  | { op: "tool"; summary: string; output?: string }
-  | { op: "status"; state: "busy" | "idle" | "awaiting" }
-  | { op: "interaction"; interaction: Interaction }
-  | { op: "result"; text: string; usage?: Usage };
-
-interface Transport {
-  send(sessionId: string, op: DisplayOp): void;
-  attach(sessionId: string, client: Client): void;   // SSE subscribe + replay
-}
-```
-
-A `GlassesRenderer` owns the transforms the raw stream cannot:
-- **Tables** → detect markdown/box-drawing tables and reflow to a vertical
-  `key: value` list (or drop borders + truncate columns to the panel width).
-  This is the concrete fix for "tables render poorly," and it belongs *here*,
-  not at the parse site.
-- **Width-aware wrapping** at the real glyph width instead of terminal columns.
-- **Long tool output** → collapse to a headline + N-line preview.
-- Different devices (phone screen vs glasses) are different Renderers over the
-  same event stream.
-
-`EvenTerminalTransport` wraps the current `src/sse.ts` ring buffer + SSE fan-out
-and maps `DisplayOp` → the `text_delta` / `tool_start` / `permission_request`
-wire shapes. A different app protocol is a different Transport.
-
-## Core — Session
-
-The former `PaneBridge`, reduced to orchestration over the four interfaces:
+What remains between Source and Sink is small and provider-agnostic:
 
 ```ts
 class Session {
-  constructor(private deps: {
-    mux: Multiplexer;
-    pane: PaneRef;
-    agent: AgentAdapter;
-    renderer: Renderer;
-    transport: Transport;
-  }) {}
-  // owns: turn lifecycle (busy/idle), cross-turn dedup, interaction state
-  // machine (detect → interpret → request → response → verify → fallback),
-  // token accounting. Depends on NO concrete implementation.
+  constructor(private source: Source, private sink: Sink) {
+    source.on((e) => this.route(e));
+  }
+  // owns ONLY what is genuinely cross-cutting:
+  //  - turn lifecycle: busy → idle boundary → synthesize the `result`
+  //  - token accounting across a turn
+  //  - forwarding prompt()/respond()/interrupt() from the app to the source
+  // Does NOT dedup (that's ScreenTimeline), does NOT know herdr/jsonl/SSE.
 }
 ```
 
-Wiring is a small factory:
-
-```ts
-const mux = await detectMultiplexer();              // herdr | cmux (by env/socket)
-for (const pane of await mux.listPanes()) {
-  const agent = agentRegistry[pane.agentKind ?? ""] ?? new ScreenOnlyAgent();
-  new Session({
-    mux, pane, agent,
-    renderer: new GlassesRenderer(),
-    transport: evenTerminal,
-  }).start();
-}
-```
+Notice what left the core versus today's 800-line `PaneBridge`: dedup, volatile
+filtering, menu parsing, key grammar, herdr calls, wire formatting — every one
+of them now has a home on the producer or consumer side. The core is just the
+turn state machine.
 
 ## Target module layout
 
 ```
 src/
-  multiplexer/
-    types.ts        # Multiplexer, PaneRef, Key, StateExplanation
-    herdr.ts        # HerdrMultiplexer (from today's herdr.ts)
-    cmux.ts         # later
-    detect.ts       # pick by env (HERDR_ENV / CMUX_SOCKET_PATH)
-  agent/
-    types.ts        # AgentAdapter, AgentTimeline, AgentEvent, Interaction
-    claude/
-      index.ts      # ClaudeAdapter
-      transcript.ts # TranscriptTimeline (from today's transcript.ts)
-      menus.ts      # interpretBlock + planResponse (key grammar)
-    codex/          # later
-    screen/
-      timeline.ts   # ScreenTimeline fallback (from today's parse.ts diff logic)
-  render/
-    types.ts        # Renderer, DisplayOp
-    glasses.ts      # GlassesRenderer (table reflow, width wrap, truncation)
-  transport/
-    types.ts        # Transport, Client
-    even-terminal.ts# EvenTerminalTransport (from today's sse.ts + wire mapping)
-  core/
-    session.ts      # Session orchestration (slimmed PaneBridge)
-    manager.ts      # discovery + reconcile (from refreshAgents)
-  server.ts         # HTTP wiring (from today's index.ts)
-  log.ts            # unchanged
+  spine.ts              # AgentEvent, Signal, Interaction, Decision — the vocabulary
+  source/
+    index.ts            # Source + factory (pick mux + agent for a pane)
+    multiplexer.ts      # Multiplexer interface
+    herdr.ts            # HerdrMultiplexer            (from today's herdr.ts)
+    cmux.ts             # later
+    agent.ts            # AgentAdapter interface
+    claude.ts           # ClaudeAdapter + menu grammar (from bridge.ts + parse.ts)
+    codex.ts            # later
+    timeline/
+      transcript.ts     # TranscriptTimeline          (from today's transcript.ts)
+      screen.ts         # ScreenTimeline: diff+filter+dedup (from parse.ts+bridge.ts)
+  sink/
+    index.ts            # Sink: even-terminal SSE + ring buffer (from sse.ts+index.ts)
+    render.ts           # pure transforms: reflowTables, wrapToWidth, truncate
+  core/session.ts       # the thin orchestrator (slimmed PaneBridge)
+  server.ts             # HTTP wiring (from index.ts)
+  log.ts                # unchanged
 ```
 
-## Migration (incremental, each step ships green)
+## What to build now vs defer (honest sequencing)
 
-Ordered so every step is independently valuable and low-risk; none is a big-bang
-rewrite.
+Held to "would a senior engineer call this over-built?", most of this should be
+deferred until the second implementation that justifies it actually arrives.
+Build in this order; stop wherever the value stops paying for the churn:
 
-1. **Extract `Multiplexer`.** Move `herdr.ts` behind the interface; `PaneBridge`
-   depends on `Multiplexer` not raw calls. De-risks cmux, mechanical, no
-   behavior change. *(highest value / lowest risk — do first)*
-2. **Name the input model.** Promote `TranscriptEvent` to the shared
-   `AgentEvent`; introduce `AgentTimeline` with `TranscriptTimeline` as the sole
-   impl. Wrap the screen path as `ScreenTimeline` behind the same interface.
-3. **Extract `AgentAdapter`.** Move claude's `interpretBlock`/`planResponse`/
-   timeline selection into `ClaudeAdapter`. `Session` loses every `agent ===`
-   branch.
-4. **Introduce `Renderer` + `Transport`.** Start with a pass-through renderer
-   (no behavior change), then add `GlassesRenderer` transforms — tables first,
-   since that is the visible pain.
-5. **Slim `PaneBridge` → `Session`.** What remains is orchestration over four
-   interfaces.
+1. **Now — define the spine + the `Timeline` seam.** Highest leverage, least
+   code. Promote `TranscriptEvent` to `AgentEvent`; wrap both jsonl and screen
+   as `Timeline`s. This alone lifts every heuristic out of the core.
+2. **Now — the render transforms (`reflowTables` first).** The only change with
+   *immediate user-visible* payoff — tables become readable on the glasses.
+   Pure functions; no new interface needed.
+3. **When cmux work starts — extract `Multiplexer`.** Mechanical; do it the day
+   you touch cmux, not before.
+4. **When codex work starts — extract `AgentAdapter`.** Same rule.
+5. **Probably never — `Renderer`/`Transport` interfaces.** Only if a second
+   device or app protocol appears. The transforms being pure is enough until
+   then.
 
-Steps 1–3 are pure refactors (behavior-preserving, guarded by the existing
-simulator E2E). Step 4 is where new *user-visible* quality (table reflow) lands.
+Steps 3–5 are behavior-preserving and guarded by the existing simulator E2E.
 
-## Non-goals / explicit tradeoffs
+## What I changed my mind about
 
-- **Not** removing screen-scraping — it is the honest fallback for agents/panes
-  without a structured log. It moves behind `ScreenTimeline`, it does not die.
-- **Not** a plugin system with dynamic loading. Registries are static maps;
-  "extensible" here means "add a file + register it," not runtime discovery.
-- **Not** abstracting the even-terminal protocol away prematurely. It stays the
-  only Transport until a second consumer actually exists; the seam just makes
-  that possible without touching the core.
+- **Killed the `Renderer`/`Transport` split.** One consumer today → one Sink
+  with an internal transform pipeline. Interfaces on speculation are ceremony.
+- **Named the event stream as the spine, not one of four coequal seams.** The
+  producer/consumer asymmetry is the real structure; pretending all four axes
+  are equal obscured that the whole point is to reach the neutral vocabulary as
+  early as possible and speak only it thereafter.
+- **Moved dedup/filtering out of "core" into `ScreenTimeline`.** They are
+  artifacts of scraping a redrawing TUI, not intrinsic to the bridge. Over a
+  structured source they must not run at all.
+- **Kept exactly two producer-side interfaces** (Multiplexer, Agent) because
+  each has a *named, roadmapped* second implementation — that, not symmetry, is
+  the bar for introducing an abstraction.
