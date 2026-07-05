@@ -1,3 +1,4 @@
+import { parseCodexEntry } from "../src/codex-transcript.js";
 import { parseEntry, summarizeTool } from "../src/transcript.js";
 
 const t = (name: string, got: unknown, want: unknown) => {
@@ -28,6 +29,34 @@ t("sidechain", parseEntry(JSON.stringify({type:"assistant", isSidechain:true, me
 t("thinking", parseEntry(JSON.stringify({type:"assistant", message:{content:[{type:"thinking",thinking:"..."}]}})), []);
 // summaries
 t("sum-bash", summarizeTool("Bash", {command:"grep -r foo ."}), "$ grep -r foo .");
+t("sum-codex-exec", summarizeTool("exec_command", {cmd:"pnpm check"}), "$ pnpm check");
 t("sum-read", summarizeTool("Read", {file_path:"/a/b.ts"}), "Read /a/b.ts");
 t("sum-write", summarizeTool("Write", {file_path:"/a/b.txt"}), "Write /a/b.txt");
+t("sum-plan", summarizeTool("update_plan", {plan:[]}), "Update plan");
 t("sum-unknown", summarizeTool("MyTool", {q:"hello"}), "MyTool: hello");
+
+// Codex interactive rollout transcript
+t("codex-user", parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"message", role:"user", content:[{type:"input_text", text:"实现 codex 支持"}]},
+})), [{t:"prompt", text:"实现 codex 支持"}]);
+t("codex-assistant", parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"message", role:"assistant", content:[{type:"output_text", text:"我会先读代码。"}]},
+})), [{t:"say", text:"我会先读代码。"}]);
+const codexTool = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"function_call", call_id:"call_1", name:"exec_command", arguments:JSON.stringify({cmd:"ls", workdir:"/tmp"})},
+}));
+t("codex-tool", [codexTool[0]?.t, (codexTool[0] as any)?.id, (codexTool[0] as any)?.name, (codexTool[0] as any)?.input],
+  ["tool", "call_1", "exec_command", {cmd:"ls", workdir:"/tmp"}]);
+const codexResult = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"function_call_output", call_id:"call_1", output:"file1\nfile2"},
+}));
+t("codex-tool-result", [codexResult[0]?.t, (codexResult[0] as any)?.id, (codexResult[0] as any)?.output],
+  ["toolResult", "call_1", "file1\nfile2"]);
+t("codex-usage", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"token_count", info:{last_token_usage:{input_tokens:10, output_tokens:3}}},
+})), [{t:"usage", usage:{input:10, output:3}}]);

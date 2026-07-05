@@ -1,7 +1,10 @@
-import { todoProgress } from "../src/bridge.js";
+import { planProgress, todoProgress } from "../src/bridge.js";
 const t=(n:string,g:unknown,w:unknown)=>console.log(`${JSON.stringify(g)===JSON.stringify(w)?"✅":"❌"} ${n}: ${JSON.stringify(g)}`);
 t("mid", todoProgress({todos:[{status:"completed"},{status:"in_progress",content:"step 2"},{status:"pending"}]}), {completed:1,total:3,current:"step 2"});
 t("done", todoProgress({todos:[{status:"completed"},{status:"completed"}]}), {completed:2,total:2,current:"All done"});
 t("activeForm-fallback", todoProgress({todos:[{status:"in_progress",activeForm:"Running X"}]}), {completed:0,total:1,current:"Running X"});
 t("empty", todoProgress({todos:[]}), null);
 t("no-field", todoProgress({}), null);
+t("plan-mid", planProgress({plan:[{status:"completed",step:"A"},{status:"in_progress",step:"B"},{status:"pending",step:"C"}]}), {completed:1,total:3,current:"B"});
+t("plan-done", planProgress({plan:[{status:"completed",step:"A"}]}), {completed:1,total:1,current:"All done"});
+t("plan-empty", planProgress({plan:[]}), null);

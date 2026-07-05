@@ -42,6 +42,12 @@ function resolveToken(): string {
   }
 }
 const TOKEN = resolveToken();
+const defaultProviderPinned = process.env.DEFAULT_PROVIDER !== undefined;
+let defaultProvider = process.env.DEFAULT_PROVIDER ?? "claude";
+
+function providerForAgent(agent: string | undefined): "codex" | "claude" {
+  return agent === "codex" ? "codex" : "claude";
+}
 
 /** Constant-time token check (avoids leaking the token via comparison timing). */
 function tokenMatches(provided: string | undefined): boolean {
@@ -114,7 +120,7 @@ api.get("/sessions", async (_req, res) => {
       title: `${a.agent} · ${path.basename(a.cwd || "/")}`,
       timestamp: new Date().toISOString(),
       cwd: a.cwd,
-      provider: a.agent === "codex" ? "codex" : "claude",
+      provider: providerForAgent(a.agent),
       status: getBridge(a.pane_id)?.state ?? "idle",
     }));
     res.json({ sessions });
@@ -125,11 +131,13 @@ api.get("/sessions", async (_req, res) => {
 
 api.get("/info", async (_req, res) => {
   let model = "";
+  let provider: "codex" | "claude" = "claude";
   try {
     const agents = await refreshAgents();
-    const claude = agents.find((a) => a.agent === "claude") ?? agents[0];
-    if (claude) {
-      const text = await paneRead(claude.pane_id, "visible", 5);
+    const target = agents.find((a) => a.focused) ?? agents[0];
+    provider = providerForAgent(target?.agent);
+    if (target?.agent === "claude") {
+      const text = await paneRead(target.pane_id, "visible", 5);
       model = extractModel(text);
     }
   } catch {
@@ -139,7 +147,7 @@ api.get("/info", async (_req, res) => {
     account: {},
     model: model || "Unknown",
     version: `${VERSION} (even-better)`,
-    provider: "claude",
+    provider,
   });
 });
 
@@ -285,10 +293,10 @@ function ipv4s(): string[] {
 const lanAddress = (): string | undefined => ipv4s().find((ip) => !isTailscale(ip));
 const tailscaleAddress = (): string | undefined => ipv4s().find(isTailscale);
 
-const authQuery = `token=${TOKEN}&defaultProvider=claude`;
-const urlFor = (host: string): string => `http://${host}:${PORT}?${authQuery}`;
+const authQuery = (): string => `token=${TOKEN}&defaultProvider=${encodeURIComponent(defaultProvider)}`;
+const urlFor = (host: string): string => `http://${host}:${PORT}?${authQuery()}`;
 // A tunnel gives a full public base (scheme+host); just append the auth query.
-const appUrlFromBase = (base: string): string => `${base}?${authQuery}`;
+const appUrlFromBase = (base: string): string => `${base}?${authQuery()}`;
 
 // ── access: one knob, one QR ───────────────────────────
 // ACCESS answers a single question — "how does the phone reach the bridge?" —
@@ -354,6 +362,10 @@ const server = app.listen(PORT, access.bindHost, async () => {
   console.log("");
   try {
     const agents = await refreshAgents();
+    if (!defaultProviderPinned) {
+      const target = agents.find((a) => a.focused) ?? agents[0];
+      defaultProvider = providerForAgent(target?.agent);
+    }
     for (const a of agents) {
       console.log(`  agent : ${a.agent} pane=${a.pane_id} status=${a.agent_status} cwd=${a.cwd}`);
     }

@@ -15,7 +15,7 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
   /^\s*[✢✳✶✻✽∗·]\s/, // working/thinking spinner line "✻ Inferring…", "· Shimmying…"
   /^\s*⏺\s*$/, // lone bullet painted before its text streams in
-  /^\s*>\s/, // user prompt echo — the app already renders user_prompt itself
+  /^\s*[>›]\s/, // user prompt echo — the app already renders user_prompt itself
   /^\s*[⠀-⣿]/, // braille spinner frames
   /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
   /^\s*interrupt\b.*[)·]/, // continuation row of a wrapped spinner line

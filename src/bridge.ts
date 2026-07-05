@@ -14,6 +14,7 @@ import {
 import { emit } from "./sse.js";
 import { logEvent } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
+import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcript.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
@@ -52,6 +53,11 @@ interface TodoItem {
   activeForm?: string;
 }
 
+interface PlanItem {
+  status?: string;
+  step?: string;
+}
+
 /** Map a TodoWrite tool input to the app's task_progress widget fields. */
 export function todoProgress(
   input: Record<string, unknown>,
@@ -67,6 +73,23 @@ export function todoProgress(
       ? "All done"
       : "";
   return { completed, total, current };
+}
+
+/** Map Codex update_plan input to the app's task_progress widget fields. */
+export function planProgress(
+  input: Record<string, unknown>,
+): { completed: number; total: number; current: string } | null {
+  const plan = Array.isArray(input.plan) ? (input.plan as PlanItem[]) : [];
+  const total = plan.length;
+  if (!total) return null;
+  const completed = plan.filter((p) => p?.status === "completed").length;
+  const active = plan.find((p) => p?.status === "in_progress");
+  const current = active?.step ?? (completed === total ? "All done" : "");
+  return { completed, total, current };
+}
+
+function isPlanTool(name: string): boolean {
+  return name === "update_plan" || name === "functions.update_plan";
 }
 
 export type AppState = "idle" | "busy" | "awaiting";
@@ -156,19 +179,10 @@ export class PaneBridge {
     if (!this.onTranscript) this.startSessionProbe();
   }
 
-  /** Pick the content source: the Claude transcript when available (structured,
+  /** Pick the content source: the agent transcript when available (structured,
    *  lossless), else a ScreenTimeline fallback that scrapes the TUI. */
   private selectTimeline(): void {
-    if (this.agent === "claude" && this.agentSessionId) {
-      const file = findSessionFile(this.agentSessionId);
-      if (file) {
-        this.timeline = new TranscriptTimeline(file);
-        this.screen = null;
-        this.onTranscript = true;
-        console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
-        return;
-      }
-    }
+    if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId)) return;
     this.screen = new ScreenTimeline({
       read: () => this.readPane(),
       windowLines: OUTPUT_WINDOW_LINES,
@@ -184,12 +198,38 @@ export class PaneBridge {
     this.onTranscript = false;
   }
 
-  /** A fresh claude pane has no session id until its first prompt lands. Probe
+  private upgradeToTranscript(id: string): boolean {
+    if (this.agent === "claude") {
+      const file = findSessionFile(id);
+      if (!file) return false;
+      this.agentSessionId = id;
+      this.screen?.dispose();
+      this.timeline = new TranscriptTimeline(file);
+      this.screen = null;
+      this.onTranscript = true;
+      console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
+      return true;
+    }
+    if (this.agent === "codex") {
+      const file = findCodexSessionFile(id);
+      if (!file) return false;
+      this.agentSessionId = id;
+      this.screen?.dispose();
+      this.timeline = new CodexTranscriptTimeline(file);
+      this.screen = null;
+      this.onTranscript = true;
+      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}`);
+      return true;
+    }
+    return false;
+  }
+
+  /** A fresh pane may have no session id until its first prompt lands. Probe
    *  herdr every 2s so the bridge upgrades from the screen fallback to the
    *  transcript as soon as the session exists. */
   private startSessionProbe(): void {
     if (this.sessionProbeTimer || this.onTranscript || this.disposed) return;
-    if (this.agent !== "claude") return;
+    if (this.agent !== "claude" && this.agent !== "codex") return;
     this.sessionProbeTimer = setInterval(() => {
       if (this.onTranscript || this.disposed) {
         this.clearProbe();
@@ -198,15 +238,7 @@ export class PaneBridge {
       void paneSessionId(this.paneId)
         .then((id) => {
           if (!id || this.onTranscript) return;
-          const file = findSessionFile(id);
-          if (!file) return;
-          this.agentSessionId = id;
-          this.screen?.dispose();
-          this.timeline = new TranscriptTimeline(file);
-          this.screen = null;
-          this.onTranscript = true;
-          console.log(`[bridge ${this.paneId}] upgraded to transcript ${file}`);
-          this.clearProbe();
+          if (this.upgradeToTranscript(id)) this.clearProbe();
         })
         .catch(() => {});
     }, 2000);
@@ -247,16 +279,8 @@ export class PaneBridge {
   /** Manager hook: a session id became known (e.g. from agent.list). Upgrade to
    *  the transcript if we are still on the screen fallback. */
   noteSessionId(id: string): void {
-    if (this.onTranscript || this.disposed || this.agent !== "claude") return;
-    const file = findSessionFile(id);
-    if (!file) return;
-    this.agentSessionId = id;
-    this.screen?.dispose();
-    this.timeline = new TranscriptTimeline(file);
-    this.screen = null;
-    this.onTranscript = true;
-    this.clearProbe();
-    console.log(`[bridge ${this.paneId}] upgraded to transcript ${file}`);
+    if (this.onTranscript || this.disposed) return;
+    if (this.upgradeToTranscript(id)) this.clearProbe();
   }
 
   private startPolling(): void {
@@ -315,6 +339,11 @@ export class PaneBridge {
         this.out.text(renderForGlasses(text) + "\n");
         return;
       }
+      case "usage": {
+        this.turnInputTokens += e.usage.input;
+        this.turnOutputTokens += e.usage.output;
+        return;
+      }
       case "tool": {
         if (e.usage) {
           this.turnInputTokens += e.usage.input;
@@ -325,6 +354,11 @@ export class PaneBridge {
           const progress = todoProgress(e.input);
           if (progress) emit(this.paneId, { type: "task_progress", ...progress });
           return; // no start/end correlation for todos
+        }
+        if (isPlanTool(e.name)) {
+          const progress = planProgress(e.input);
+          if (progress) emit(this.paneId, { type: "task_progress", ...progress });
+          return; // plan updates drive the progress widget, not a tool bubble
         }
         // The app renders a tool as a start→end bubble keyed by toolId, and it
         // styles both with its own prefix — so we work with that rather than

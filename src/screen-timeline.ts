@@ -96,7 +96,7 @@ export class ScreenTimeline implements Timeline {
 
   private isTypedEcho(line: string): boolean {
     if (!this.recentTyped || Date.now() - this.recentTypedAt > 120_000) return false;
-    const norm = line.replace(/\s+/g, "");
+    const norm = line.replace(/^\s*[>›]\s*/, "").replace(/\s+/g, "");
     return norm.length >= 4 && this.recentTyped.includes(norm);
   }
 
