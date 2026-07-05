@@ -55,6 +55,7 @@ export class PaneBridge {
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
   private lastLines: string[] = [];
+  private lastFlushed = "";
   private pendingOut: string[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private turnStartMs = 0;
@@ -180,6 +181,8 @@ export class PaneBridge {
     const text = this.pendingOut.join("\n").trimEnd();
     this.pendingOut = [];
     if (!text.trim()) return;
+    if (text === this.lastFlushed) return; // safety net against re-emits
+    this.lastFlushed = text;
     emit(this.paneId, { type: "text_delta", text: text + "\n" });
   }
 

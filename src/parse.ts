@@ -13,9 +13,12 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /\? for shortcuts/i,
   /ctrl\+[a-z] to /i,
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
-  /^\s*[✻✽✳✢·∗+*]\s+\S+…/, // working spinner "✻ Baking…"
+  /^\s*[✢✳✶✻✽∗]\s/, // working/thinking spinner line "✻ Inferring… (esc to…"
   /^\s*[⠀-⣿]/, // braille spinner frames
+  /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
+  /^\s*interrupt\b.*[)·]/, // continuation row of a wrapped spinner line
   /🧠\s*\d+%/, // context meter
+  /[↓↑]\s*[\d.]+k?\s*tokens/i, // live token counter fragments
   /tokens? used/i,
   /^\s*⎿\s+Running…/i, // in-flight tool status line
   /^[~/].*\svia\s/, // starship-style "path via lang" shell prompt line
@@ -38,16 +41,25 @@ export function diffNewLines(prev: string[], curr: string[]): string[] {
   if (prev.length === 0) return [];
   const MIN_RUN = 3;
   let bestRun = 0;
+  let bestD = 0;
   for (let d = 0; d < prev.length; d++) {
     const lim = Math.min(prev.length - d, curr.length);
     if (lim <= bestRun) break; // can't beat the best anymore
     let run = 0;
     while (run < lim && prev[d + run] === curr[run]) run++;
-    if (run > bestRun) bestRun = run;
-    if (bestRun === curr.length) return []; // curr fully contained in prev
+    if (run > bestRun) {
+      bestRun = run;
+      bestD = d;
+    }
   }
-  if (bestRun < MIN_RUN) return curr; // full repaint — everything is new
-  return curr.slice(bestRun);
+  const covered = prev.length - bestD; // curr rows still covered by prev
+  const fullMatch = bestRun === Math.min(covered, curr.length);
+  if (!fullMatch && bestRun < MIN_RUN) return []; // repaint — skip, don't spam
+  // Only rows beyond prev's aligned coverage are new. Rows WITHIN the window
+  // that changed (TUI redraws-in-place: spinners, streaming tail, token
+  // counters) are deliberately dropped — emitting them would re-send
+  // everything below the mutated row on every frame.
+  return covered >= curr.length ? [] : curr.slice(covered);
 }
 
 export interface MenuOption {
