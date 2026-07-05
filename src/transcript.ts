@@ -1,6 +1,7 @@
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AgentEvent, Timeline, Usage } from "./spine.js";
 
 // Tail a Claude Code session transcript (~/.claude/projects/*/<id>.jsonl).
 // The transcript is the authoritative record of a session: user prompts,
@@ -17,15 +18,6 @@ export function findSessionFile(sessionId: string): string | null {
     if (existsSync(p)) return p;
   }
   return null;
-}
-
-export interface TranscriptEvent {
-  kind: "user_prompt" | "text" | "tool_use" | "tool_result";
-  text?: string; // user_prompt / text / tool_result output
-  toolId?: string;
-  toolName?: string;
-  input?: Record<string, unknown>;
-  usage?: { input: number; output: number };
 }
 
 interface ContentBlock {
@@ -59,8 +51,8 @@ function resultText(block: ContentBlock): string {
   return "";
 }
 
-/** Parse one jsonl line into zero or more transcript events. */
-export function parseEntry(line: string): TranscriptEvent[] {
+/** Parse one jsonl line into zero or more spine AgentEvents. */
+export function parseEntry(line: string): AgentEvent[] {
   let entry: Entry;
   try {
     entry = JSON.parse(line) as Entry;
@@ -69,26 +61,22 @@ export function parseEntry(line: string): TranscriptEvent[] {
   }
   if (entry.isSidechain) return []; // sub-agent internal traffic
   const content = entry.message?.content;
-  const events: TranscriptEvent[] = [];
+  const events: AgentEvent[] = [];
 
   if (entry.type === "user") {
     if (typeof content === "string") {
       // terminal-typed prompt; skip harness/command wrappers
       if (content.trim() && !content.trimStart().startsWith("<")) {
-        events.push({ kind: "user_prompt", text: content });
+        events.push({ t: "prompt", text: content });
       }
       return events;
     }
     if (Array.isArray(content)) {
       for (const b of content) {
         if (b.type === "tool_result" && b.tool_use_id) {
-          events.push({
-            kind: "tool_result",
-            toolId: b.tool_use_id,
-            text: resultText(b),
-          });
+          events.push({ t: "toolResult", id: b.tool_use_id, output: resultText(b), ok: true });
         } else if (b.type === "text" && b.text?.trim() && !b.text.trimStart().startsWith("<")) {
-          events.push({ kind: "user_prompt", text: b.text });
+          events.push({ t: "prompt", text: b.text });
         }
       }
       return events;
@@ -98,20 +86,18 @@ export function parseEntry(line: string): TranscriptEvent[] {
 
   if (entry.type === "assistant" && Array.isArray(content)) {
     const u = entry.message?.usage;
-    const usage = u
-      ? { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0 }
-      : undefined;
+    // Attach usage to the first emitted event of this message only (see spine).
+    let usage = u ? { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0 } : undefined;
+    const take = (): Usage | undefined => {
+      const v = usage;
+      usage = undefined;
+      return v;
+    };
     for (const b of content) {
       if (b.type === "text" && b.text?.trim()) {
-        events.push({ kind: "text", text: b.text, usage });
+        events.push({ t: "say", text: b.text, usage: take() });
       } else if (b.type === "tool_use" && b.id && b.name) {
-        events.push({
-          kind: "tool_use",
-          toolId: b.id,
-          toolName: b.name,
-          input: b.input ?? {},
-          usage,
-        });
+        events.push({ t: "tool", id: b.id, name: b.name, input: b.input ?? {}, usage: take() });
       }
       // thinking blocks are deliberately skipped
     }
@@ -167,7 +153,7 @@ export class TranscriptTail {
     this.offset = statSync(filePath).size;
   }
 
-  async readNew(): Promise<TranscriptEvent[]> {
+  async readNew(): Promise<AgentEvent[]> {
     const size = statSync(this.filePath).size;
     if (size < this.offset) {
       // truncated/rotated — restart from the end
@@ -187,10 +173,25 @@ export class TranscriptTail {
     const text = this.partial + chunk;
     const lines = text.split("\n");
     this.partial = lines.pop() ?? ""; // last element may be an incomplete line
-    const out: TranscriptEvent[] = [];
+    const out: AgentEvent[] = [];
     for (const line of lines) {
       if (line.trim()) out.push(...parseEntry(line));
     }
     return out;
+  }
+}
+
+/** Timeline over a Claude Code session transcript: structured, lossless, no
+ *  heuristics. Returns null-safe by construction (caller checks the file). */
+export class TranscriptTimeline implements Timeline {
+  private tail: TranscriptTail;
+  constructor(filePath: string) {
+    this.tail = new TranscriptTail(filePath);
+  }
+  poll(): Promise<AgentEvent[]> {
+    return this.tail.readNew();
+  }
+  dispose(): void {
+    // stateless file tail — nothing to release
   }
 }
