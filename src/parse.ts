@@ -14,7 +14,9 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /ctrl\+[a-z] to /i,
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
   /^\s*[✢✳✶✻✽∗·]\s/, // working/thinking spinner line "✻ Inferring…", "· Shimmying…"
-  /^\s*⏺\s+(Running|Ran)\b.*(…|\.\.\.)/, // transient "⏺ Running 1 shell command…"
+  /^\s*⏺?\s*(Running|Ran)\s+\d+\s+shell command/i, // transient "Running 2 shell commands…"
+  /…\s*\(\d+m?\s?\d*s?\)\s*$/, // command line re-rendered with elapsed-time suffix "… (3s)"
+  /^\s*>\s/, // user prompt echo — the app already renders user_prompt itself
   /^\s*[⠀-⣿]/, // braille spinner frames
   /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
   /^\s*interrupt\b.*[)·]/, // continuation row of a wrapped spinner line

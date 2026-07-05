@@ -22,3 +22,12 @@ t("filter      ", filterVolatile([
   "⏺ real assistant text",
   "✻ Inferring…",
 ]), ["⏺ real assistant text"]);
+
+// round-3 additions: transient command-status and prompt-echo lines
+t("filter-r3   ", filterVolatile([
+  "  Running 3 shell commands…",
+  "     deltas = [e for e in events… (3s)",
+  "> 用户说的话回显",
+  "  ⎿  $ echo real-command",
+  "normal output",
+]), ["  ⎿  $ echo real-command", "normal output"]);
