@@ -10,11 +10,27 @@ what streams to the glasses, and prompts from the glasses are typed into the
 pane.
 
 ```
-┌── herdr ──────────────┐      ┌── bridge ─────────┐      ┌── Even App ──┐
-│ claude / codex panes  │◄────►│ HTTP + SSE :3456  │◄────►│  → G2 glasses │
-│ (your live sessions)  │socket│ even-terminal 协议 │ WiFi │              │
-└───────────────────────┘      └───────────────────┘      └──────────────┘
+┌── herdr ──────────────┐      ┌── bridge ──────────────┐      ┌── Even App ──┐
+│ claude / codex panes  │◄────►│ HTTP + SSE :3456       │◄────►│  → G2 glasses │
+│ (your live sessions)  │socket│ even-terminal protocol │ WiFi │              │
+└───────────────────────┘      └────────────────────────┘      └──────────────┘
 ```
+
+> Unofficial project — not affiliated with or endorsed by Even Realities,
+> Anthropic, or herdr. The wire protocol is a clean-room compatible
+> implementation of what `@evenrealities/even-terminal` speaks; no code from
+> that package is included.
+
+## Prerequisites
+
+- macOS (tested) with [herdr](https://herdr.dev) running, and at least one
+  `claude` (or `codex`) agent running in a herdr pane — the bridge mirrors
+  those; it never spawns agents itself.
+- Node.js ≥ 18 and `pnpm`.
+- Even Realities G2 glasses paired with the Even App on your phone.
+- Depending on `ACCESS`: nothing extra for `lan`/`local`; the `tailscale` CLI
+  for `tailscale`/`tailscale-funnel`; the matching CLI for other tunnels
+  (`ssh` for pinggy, `cloudflared`, `bore`, `ngrok`).
 
 ## How it works
 
@@ -109,3 +125,7 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
   glasses picks the focused herdr agent pane instead of spawning anything.
 - Never calls `server.*` socket methods (reload/stop are excluded by an
   allowlist in `src/herdr.ts`).
+
+## License
+
+[MIT](LICENSE)
