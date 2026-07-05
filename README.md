@@ -1,4 +1,4 @@
-# herdr-even-bridge
+# even-better
 
 Bridge your existing [herdr](https://herdr.dev) agent sessions to Even Realities
 G2 glasses. Speaks the same HTTP/SSE protocol as

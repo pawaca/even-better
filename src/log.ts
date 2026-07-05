@@ -5,7 +5,7 @@ import { appendFile } from "node:fs";
 // "out" = SSE event pushed to the app, "in" = HTTP request from the app,
 // "diag" = internal diagnostics (blocked-menu parsing, permission attempts).
 export const eventLogPath =
-  process.env.EVENT_LOG ?? "/tmp/herdr-even-bridge-events.log";
+  process.env.EVENT_LOG ?? "/tmp/even-better-events.log";
 
 export function logEvent(
   dir: "out" | "in" | "diag",

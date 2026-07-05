@@ -1,7 +1,7 @@
 {
-  "name": "herdr-even-bridge",
+  "name": "even-better",
   "version": "0.1.0",
-  "description": "Bridge herdr agent sessions to Even Realities G2 glasses (even-terminal protocol compatible)",
+  "description": "Mirror terminal coding-agent sessions to Even Realities G2 glasses (even-terminal protocol compatible)",
   "type": "module",
   "private": true,
   "scripts": {

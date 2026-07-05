@@ -1,6 +1,6 @@
 # Architecture
 
-A design note for herdr-even-bridge. It states the target shape and, just as
+A design note for even-better. It states the target shape and, just as
 importantly, what it deliberately does *not* abstract. It supersedes an earlier
 five-seam draft that over-built the output side; see "What I changed my mind
 about" at the end.

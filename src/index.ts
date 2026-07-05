@@ -248,7 +248,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   const host = lanAddress() ?? "localhost";
   const url = `http://${host}:${PORT}?token=${TOKEN}&defaultProvider=claude`;
   console.log("");
-  console.log(`  herdr-even-bridge v${VERSION}`);
+  console.log(`  even-better v${VERSION}`);
   console.log(`  Local : http://localhost:${PORT}`);
   console.log(`  LAN   : http://${host}:${PORT}`);
   console.log(`  Token : ${TOKEN}`);
