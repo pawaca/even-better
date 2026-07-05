@@ -41,8 +41,9 @@ const OUTPUT_WINDOW_LINES = 120;
 const POLL_INTERVAL_MS = 300;
 // How long herdr must stay "idle" before we treat a turn as ended. herdr flips
 // to idle transiently between tool calls (prompt box flashes), so committing
-// immediately blanks the thinking indicator and fires a spurious result. Any
-// busy signal or content activity within this window cancels the pending idle.
+// immediately blanks the thinking indicator and fires a spurious result. A busy
+// signal within this window cancels the pending idle (the agent resumed); if
+// idle persists, the turn is really over.
 const IDLE_GRACE_MS = 3500;
 
 interface TodoItem {
@@ -287,11 +288,6 @@ export class PaneBridge {
    *  source-, and heuristic-agnostic — a `say` is a `say` whether it came from
    *  the jsonl or a scraped screen. */
   private onAgentEvent(e: AgentEvent): void {
-    // New content while an idle is pending means the agent is still working
-    // (herdr's idle was a between-tools blip); cancel it so the indicator holds.
-    if (this.idleTimer && (e.t === "say" || e.t === "tool" || e.t === "toolResult")) {
-      this.cancelIdle();
-    }
     switch (e.t) {
       case "prompt": {
         const text = e.text.trim();
@@ -419,7 +415,10 @@ export class PaneBridge {
     // pane isn't showing the working spinner (e.g. its prompt box flashes
     // between tool calls), which would otherwise blank the thinking indicator
     // and fire a spurious result mid-turn. Only commit the turn end after idle
-    // persists for IDLE_GRACE_MS; a busy signal or content activity cancels it.
+    // persists for IDLE_GRACE_MS; a busy signal (agent resumed) cancels it. We
+    // do NOT cancel on content: the final block often lands during the grace
+    // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
+    // so canceling there would strand the turn as "streaming" forever.
     if (this.state === "idle" || this.idleTimer) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;

@@ -77,7 +77,9 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 - **Idle is debounced (`IDLE_GRACE_MS`).** herdr flips to idle transiently
   between tool calls (its prompt box flashes), so committing immediately blanks
   the thinking indicator and fires a spurious `result` mid-turn. Only commit
-  turn-end after idle persists; a busy signal or content activity cancels it.
+  turn-end after idle persists; a `busy` signal cancels it. Do **not** cancel on
+  content — the final block lands during the grace (jsonl lags herdr) and there
+  is no second idle to re-arm the timer, so that would strand the turn forever.
 
 ## even-terminal protocol: four consumption semantics
 
