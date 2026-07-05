@@ -496,8 +496,8 @@ export class PaneBridge {
       if (!menu) {
         emit(this.paneId, {
           type: "notification",
-          title: "Agent 等待输入",
-          message: "终端上有一个无法解析的表单,请到终端处理",
+          title: "Agent waiting",
+          message: "An unparseable form is open — please respond in the terminal",
         });
         return;
       }
@@ -679,8 +679,8 @@ export class PaneBridge {
     if (!r.ok) {
       emit(this.paneId, {
         type: "notification",
-        title: "确认未生效",
-        message: "自动按键未能关闭终端里的确认菜单,请到终端处理",
+        title: "Confirmation failed",
+        message: "Could not dismiss the confirmation menu — please respond in the terminal",
       });
       return;
     }
@@ -721,8 +721,8 @@ export class PaneBridge {
       if (!r.ok) {
         emit(this.paneId, {
           type: "notification",
-          title: "选择未生效",
-          message: "自动按键未能提交选项,请到终端处理",
+          title: "Selection failed",
+          message: "Could not submit the choice — please respond in the terminal",
         });
         return;
       }
@@ -735,8 +735,8 @@ export class PaneBridge {
       logEvent("diag", this.paneId, { questionNoMatch: label.slice(0, 60) });
       emit(this.paneId, {
         type: "notification",
-        title: "无法匹配选项",
-        message: `"${label.slice(0, 30)}" 不在选项里,请在终端里回答`,
+        title: "No matching option",
+        message: `"${label.slice(0, 30)}" is not one of the options — please answer in the terminal`,
       });
     }
   }
