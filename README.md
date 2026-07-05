@@ -55,12 +55,20 @@ Environment variables:
 | --- | --- | --- |
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
+| `BIND` | `all` | Interface to listen on: `all` (0.0.0.0), `tailscale`, `lan`, or a literal IP |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
 | `DEBUG_POLL` | – | `1` logs poll diffs |
 
 The phone must reach your machine over the network (same LAN, Tailscale, etc.).
+
+**Security note.** The API can drive Claude Code (i.e. run code on your machine),
+guarded only by the bearer token, over plain HTTP. On a trusted home LAN the
+default `BIND=all` is fine. On an untrusted network (office, public Wi-Fi) use
+`BIND=tailscale`: the port stays invisible to the LAN and is reachable only over
+the private, WireGuard-encrypted tailnet — so the token never travels in the
+clear and nothing can port-scan you into an agent session.
 
 ## Protocol surface (even-terminal compatible)
 

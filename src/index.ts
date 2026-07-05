@@ -259,11 +259,40 @@ function urlFor(host: string): string {
   return `http://${host}:${PORT}?token=${TOKEN}&defaultProvider=claude`;
 }
 
-const server = app.listen(PORT, "0.0.0.0", async () => {
+// Which interface to listen on. Default 0.0.0.0 (all — convenient on a trusted
+// home LAN). On an untrusted network (office, public Wi-Fi) prefer BIND=tailscale
+// so the port is invisible to the LAN and only reachable over the private,
+// WireGuard-encrypted tailnet. BIND=lan or a literal IP also work.
+function resolveBind(): { host: string; label: string } {
+  const b = (process.env.BIND ?? "all").toLowerCase();
+  if (b === "all" || b === "0.0.0.0") return { host: "0.0.0.0", label: "all interfaces" };
+  if (b === "tailscale") {
+    const ts = tailscaleAddress();
+    if (!ts) {
+      console.error("BIND=tailscale but no Tailscale (100.64/10) address found — is Tailscale up?");
+      process.exit(1);
+    }
+    return { host: ts, label: "Tailscale only" };
+  }
+  if (b === "lan") {
+    const lan = lanAddress();
+    if (!lan) {
+      console.error("BIND=lan but no LAN address found");
+      process.exit(1);
+    }
+    return { host: lan, label: "LAN only" };
+  }
+  return { host: process.env.BIND as string, label: `${process.env.BIND} only` };
+}
+
+const bind = resolveBind();
+
+const server = app.listen(PORT, bind.host, async () => {
   const lan = lanAddress();
   const ts = tailscaleAddress();
   console.log("");
   console.log(`  even-better v${VERSION}`);
+  console.log(`  Bind      : ${bind.host} (${bind.label})`);
   console.log(`  Local     : http://localhost:${PORT}`);
   if (lan) console.log(`  LAN       : http://${lan}:${PORT}`);
   if (ts) console.log(`  Tailscale : http://${ts}:${PORT}`);
@@ -281,13 +310,20 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   } catch (err) {
     console.error(`  herdr : NOT REACHABLE — ${(err as Error).message}`);
   }
-  // One QR per reachable address, labeled, so you scan the right one for your
-  // situation: LAN on the same Wi-Fi, Tailscale from anywhere on the tailnet.
-  const targets = [
+  // Only advertise addresses that are actually reachable given the bind. When
+  // bound to all, offer both LAN and Tailscale; when bound to one interface,
+  // only that one is reachable, so only its QR is shown.
+  const all = [
     lan ? { label: "LAN", host: lan } : null,
     ts ? { label: "Tailscale", host: ts } : null,
   ].filter((x): x is { label: string; host: string } => x !== null);
-  for (const { label, host } of targets.length ? targets : [{ label: "Local", host: "localhost" }]) {
+  const targets =
+    bind.host === "0.0.0.0"
+      ? all.length
+        ? all
+        : [{ label: "Local", host: "localhost" }]
+      : [{ label: bind.label, host: bind.host }];
+  for (const { label, host } of targets) {
     const url = urlFor(host);
     console.log("");
     console.log(`  ${label}: ${url}`);
