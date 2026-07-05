@@ -14,6 +14,7 @@ import {
 } from "./bridge.js";
 import { emit, getMessages, sseHandler } from "./sse.js";
 import { paneRead } from "./herdr.js";
+import { logEvent, eventLogPath } from "./log.js";
 import { extractModel } from "./parse.js";
 
 const VERSION = "0.1.0";
@@ -37,6 +38,22 @@ function auth(req: Request, res: Response, next: NextFunction): void {
 
 const api = express.Router();
 app.use("/api", auth, api);
+
+// Log every inbound app request (except the SSE stream itself) for debugging.
+api.use((req, _res, next) => {
+  if (req.path !== "/events") {
+    const sessionId =
+      (req.body?.sessionId as string) ??
+      (req.query.sessionId as string) ??
+      "";
+    logEvent("in", sessionId, {
+      method: req.method,
+      path: req.path,
+      ...(req.method === "POST" ? { body: req.body } : { query: req.query }),
+    });
+  }
+  next();
+});
 
 // ── even-terminal protocol surface ─────────────────────
 
@@ -218,6 +235,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   console.log(`  Local : http://localhost:${PORT}`);
   console.log(`  LAN   : http://${host}:${PORT}`);
   console.log(`  Token : ${TOKEN}`);
+  console.log(`  Log   : ${eventLogPath}`);
   console.log("");
   try {
     const agents = await refreshAgents();

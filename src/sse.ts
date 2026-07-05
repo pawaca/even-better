@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { logEvent } from "./log.js";
 
 // Per-session message ring buffer + SSE fan-out.
 // Protocol-compatible with even-terminal's routes/events.js: each SSE frame is
@@ -30,6 +31,7 @@ export function emit(sessionId: string, msg: object): void {
   const id = s.nextId++;
   s.messages.push({ id, msg });
   if (s.messages.length > MAX_MESSAGES_PER_SESSION) s.messages.shift();
+  logEvent("out", sessionId, msg);
   if (process.env.VERBOSE === "1") {
     console.log(`[SSE-${sessionId}] ${JSON.stringify(msg)}`);
   }
