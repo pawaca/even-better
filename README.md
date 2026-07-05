@@ -56,7 +56,7 @@ Environment variables:
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
 | `BIND` | `all` | Interface to listen on: `all` (0.0.0.0), `tailscale`, `lan`, or a literal IP |
-| `EXPOSE` | – | Public tunnel: `pinggy`, `bore`, `ngrok`, or `cloudflared` (spawns that CLI) |
+| `EXPOSE` | – | Public tunnel: `funnel` (Tailscale), `pinggy`, `bore`, `ngrok`, or `cloudflared` |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
@@ -79,6 +79,11 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 - **Tailscale (recommended)** — private, WireGuard-encrypted, stable IP, no time
   limit. Nothing exposed publicly. Run with `BIND=tailscale` and scan the
   `Tailscale:` QR. Best for regular use.
+- **`EXPOSE=funnel` (Tailscale Funnel)** — public HTTPS at your stable
+  `*.ts.net` name; the **phone needs no client**, SSE works (verified), and it
+  tears the tunnel down when the bridge exits. Requires Funnel enabled in the
+  Tailscale admin console once, and the bridge on localhost (`BIND=all` default).
+  Best no-install remote option.
 - **`EXPOSE=pinggy`** — quick public tunnel over the built-in `ssh`, zero install,
   supports SSE. Free tunnels rotate every 60 min. Good for a one-off share.
   `bore`/`ngrok` also work (`bore` is plain HTTP; `ngrok` needs an authtoken).

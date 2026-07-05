@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import qrcodeTerminal from "qrcode-terminal";
 
 // Optional public tunnel, selected via EXPOSE=<provider>. Mirrors
@@ -12,6 +12,7 @@ interface Provider {
   buildArgs(port: number): string[];
   parseUrl(output: string): string | undefined;
   note?: string; // caveat printed when the provider starts
+  cleanup?(): void; // synchronous teardown run on exit (in addition to killing the child)
 }
 
 const providers: Record<string, Provider> = {
@@ -62,6 +63,29 @@ const providers: Record<string, Provider> = {
       "bridge streams over — expect no live output. For Cloudflare use a NAMED " +
       "tunnel pointed at localhost:<port> (SSE works, and you can add Access auth); see README.",
   },
+  // Tailscale Funnel: public HTTPS at your stable ts.net name, SSE verified to
+  // work. Foreground `tailscale funnel <port>` holds the tunnel while alive and
+  // tears it down when killed — fits the spawn/scrape/kill model directly.
+  funnel: {
+    name: "funnel",
+    program: "tailscale",
+    buildArgs: (port) => ["funnel", String(port)],
+    parseUrl: (o) => o.match(/https:\/\/[^\s/]+\.ts\.net/)?.[0]?.replace(/\/+$/, ""),
+    note:
+      "Tailscale Funnel: public HTTPS via your stable *.ts.net name (encrypted). " +
+      "Needs Funnel enabled in the admin console, and the bridge listening on " +
+      "localhost (default BIND=all is fine, BIND=tailscale is not).",
+    // The funnel config lives in tailscaled and can outlive an abruptly-killed
+    // child, leaving the port publicly exposed. Force it down on exit. (This
+    // resets any serve config — expected, since EXPOSE=funnel owns it.)
+    cleanup: () => {
+      try {
+        spawnSync("tailscale", ["funnel", "reset"], { stdio: "ignore" });
+      } catch {
+        /* best effort on shutdown */
+      }
+    },
+  },
 };
 
 export function exposeProviderNames(): string[] {
@@ -101,6 +125,12 @@ export function startExpose(port: number, buildAppUrl: (publicBase: string) => s
   };
   child.stdout.on("data", onData);
   child.stderr.on("data", onData);
+  // If no URL appears in time, the provider is likely stuck (e.g. Funnel not
+  // enabled, ssh key prompt) — surface what it printed so the failure is visible.
+  const timeout = setTimeout(() => {
+    if (!found) console.error(`  ${provider.name}: no public URL after 15s. Output so far:\n${buffer.trim() || "(none)"}`);
+  }, 15_000);
+  timeout.unref?.();
   child.on("error", (err) =>
     console.error(
       `  Failed to start ${provider.name}: ${err.message} — install it, or set ${provider.name.toUpperCase()}_PROGRAM_PATH`,
@@ -109,16 +139,20 @@ export function startExpose(port: number, buildAppUrl: (publicBase: string) => s
   child.on("exit", (code) => {
     if (code && !found) console.error(`  ${provider.name} exited with code ${code}`);
   });
-  const kill = (): void => {
+  // Tear down on exit. The "exit" handler is the reliable path — the server's
+  // own SIGINT/SIGTERM handlers call process.exit() first, which pre-empts any
+  // signal handler registered here but still fires "exit".
+  const teardown = (): void => {
     if (!child.killed) child.kill();
+    provider.cleanup?.();
   };
-  process.on("exit", kill);
+  process.on("exit", teardown);
   process.on("SIGINT", () => {
-    kill();
+    teardown();
     process.exit(0);
   });
   process.on("SIGTERM", () => {
-    kill();
+    teardown();
     process.exit(0);
   });
 }
