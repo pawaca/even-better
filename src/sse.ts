@@ -32,6 +32,13 @@ export function emit(sessionId: string, msg: object): void {
   s.messages.push({ id, msg });
   if (s.messages.length > MAX_MESSAGES_PER_SESSION) s.messages.shift();
   logEvent("out", sessionId, msg);
+  const type = (msg as { type?: string }).type;
+  if (process.env.DEBUG_STREAM !== "0" && type !== "text_delta") {
+    // text_delta is traced line-by-line in bridge.ts; summarize the rest here
+    const detail = JSON.stringify(msg);
+    const line = `► send ${sessionId} ${type} ${detail.length > 160 ? detail.slice(0, 160) + "…" : detail}`;
+    console.log(process.stdout.isTTY ? `\x1b[36m${line}\x1b[0m` : line);
+  }
   if (process.env.VERBOSE === "1") {
     console.log(`[SSE-${sessionId}] ${JSON.stringify(msg)}`);
   }

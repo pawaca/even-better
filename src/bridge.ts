@@ -19,6 +19,15 @@ import {
   type ParsedMenu,
 } from "./parse.js";
 
+// Human-readable stream tracing on the server console (set DEBUG_STREAM=0 to
+// silence): dim = new screen content captured by the diff, green = what is
+// actually sent to the glasses app, yellow = lines suppressed and why.
+const STREAM_LOG = process.env.DEBUG_STREAM !== "0";
+const USE_COLOR = process.stdout.isTTY === true;
+function paint(code: string, s: string): string {
+  return USE_COLOR ? `\x1b[${code}m${s}\x1b[0m` : s;
+}
+
 const OUTPUT_WINDOW_LINES = 120;
 // Scrollback window for streaming reads. The visible screen (~45 rows) is too
 // small: fast output scrolls through it between polls and the lines are lost.
@@ -181,10 +190,11 @@ export class PaneBridge {
     }
     const added = diffNewLines(this.lastLines, lines);
     this.lastLines = lines;
-    if (process.env.DEBUG_POLL === "1" && added.length > 0) {
-      console.log(`[poll ${this.paneId}] +${added.length} lines`);
-    }
     if (added.length === 0) return;
+    if (STREAM_LOG) {
+      console.log(paint("2", `┌ capture ${this.paneId} +${added.length} line(s)`));
+      for (const l of added) console.log(paint("2", `│ ${l}`));
+    }
     this.pendingOut.push(...added);
     if (!this.flushTimer) {
       this.flushTimer = setTimeout(() => this.flushOutput(), FLUSH_INTERVAL_MS);
@@ -206,8 +216,14 @@ export class PaneBridge {
     for (const line of this.pendingOut) {
       const t = line.trim();
       if (!t) continue;
-      if (this.isTypedEcho(line)) continue;
-      if (t === this.lastEmittedLine) continue; // consecutive duplicate
+      if (this.isTypedEcho(line)) {
+        if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
+        continue;
+      }
+      if (t === this.lastEmittedLine) {
+        if (STREAM_LOG) console.log(paint("33", `✂ drop(dupe) ${this.paneId}: ${t.slice(0, 90)}`));
+        continue;
+      }
       this.lastEmittedLine = t;
       out.push(line);
     }
@@ -216,6 +232,10 @@ export class PaneBridge {
     const text = out.join("\n");
     if (text === this.lastFlushed) return; // safety net against re-emits
     this.lastFlushed = text;
+    if (STREAM_LOG) {
+      console.log(paint("32", `► send ${this.paneId} text_delta ${out.length} line(s)`));
+      for (const l of out) console.log(paint("32", `│ ${l}`));
+    }
     emit(this.paneId, { type: "text_delta", text: text + "\n" });
   }
 
