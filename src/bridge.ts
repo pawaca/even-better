@@ -61,6 +61,9 @@ export class PaneBridge {
   private polling = false;
   private lastLines: string[] = [];
   private lastFlushed = "";
+  private lastEmittedLine = "";
+  private recentTyped = "";
+  private recentTypedAt = 0;
   private pendingOut: string[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private turnStartMs = 0;
@@ -188,12 +191,29 @@ export class PaneBridge {
     }
   }
 
+  /** True when a line is the pane's echo of text we just typed (the prompt
+   *  box renders it, wrapped; the app already displays user_prompt itself). */
+  private isTypedEcho(line: string): boolean {
+    if (!this.recentTyped || Date.now() - this.recentTypedAt > 120_000) return false;
+    const norm = line.replace(/\s+/g, "");
+    return norm.length >= 4 && this.recentTyped.includes(norm);
+  }
+
   private flushOutput(): void {
     this.flushTimer = null;
     if (this.pendingOut.length === 0) return;
-    const text = this.pendingOut.join("\n").trimEnd();
+    const out: string[] = [];
+    for (const line of this.pendingOut) {
+      const t = line.trim();
+      if (!t) continue;
+      if (this.isTypedEcho(line)) continue;
+      if (t === this.lastEmittedLine) continue; // consecutive duplicate
+      this.lastEmittedLine = t;
+      out.push(line);
+    }
     this.pendingOut = [];
-    if (!text.trim()) return;
+    if (out.length === 0) return;
+    const text = out.join("\n");
     if (text === this.lastFlushed) return; // safety net against re-emits
     this.lastFlushed = text;
     emit(this.paneId, { type: "text_delta", text: text + "\n" });
@@ -306,6 +326,8 @@ export class PaneBridge {
 
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
+    this.recentTyped = text.replace(/\s+/g, "");
+    this.recentTypedAt = Date.now();
     await typeAndSubmit(this.paneId, text);
     if (this.state !== "busy") {
       this.turnStartMs = Date.now();
@@ -370,6 +392,8 @@ export class PaneBridge {
         await sendInput(this.paneId, match.digit);
       } else {
         // Free-text answer: type it and submit.
+        this.recentTyped = label.replace(/\s+/g, "");
+        this.recentTypedAt = Date.now();
         await typeAndSubmit(this.paneId, label);
       }
     } catch (err) {
