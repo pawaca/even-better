@@ -1,0 +1,28 @@
+{
+  "name": "herdr-even-bridge",
+  "version": "0.1.0",
+  "description": "Bridge herdr agent sessions to Even Realities G2 glasses (even-terminal protocol compatible)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "check": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
