@@ -55,7 +55,7 @@ Environment variables:
 | --- | --- | --- |
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
-| `ACCESS` | `lan` | How the phone reaches the bridge — sets both the bind and the single QR: `lan` (same Wi-Fi), `local` (same machine), `tailscale`, `funnel`, `pinggy`, `bore`, `ngrok`, `cloudflared`, or a literal IP |
+| `ACCESS` | `lan` | How the phone reaches the bridge — sets both the bind and the single QR: `lan` (same Wi-Fi), `local` (same machine), `tailscale`, `tailscale-funnel` (or `funnel`), `pinggy`, `bore`, `ngrok`, `cloudflared`, or a literal IP |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
@@ -77,7 +77,7 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 
 - **`ACCESS=tailscale` (recommended)** — private, WireGuard-encrypted, stable IP,
   no time limit. Nothing exposed publicly. Scan the one QR. Best for regular use.
-- **`ACCESS=funnel` (Tailscale Funnel)** — public HTTPS at your stable
+- **`ACCESS=tailscale-funnel`** (shorthand: `funnel`) — public HTTPS at your stable
   `*.ts.net` name; the **phone needs no client**, SSE works (verified), and it
   tears the tunnel down when the bridge exits. Requires Funnel enabled in the
   Tailscale admin console once. Best no-install remote option.

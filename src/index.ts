@@ -297,7 +297,7 @@ const appUrlFromBase = (base: string): string => `${base}?${authQuery}`;
 //   lan       (default) bind all interfaces, QR = LAN IP     — same Wi-Fi
 //   local               bind loopback,       QR = localhost  — same machine
 //   tailscale           bind tailnet IP,     QR = tailnet IP — private, off-Wi-Fi
-//   funnel|pinggy|…      bind loopback + run a public tunnel, QR = its URL
+//   tailscale-funnel|pinggy|…  bind loopback + run a public tunnel, QR = its URL
 //   <literal ip>        bind that IP,        QR = that IP
 interface Access {
   label: string;
@@ -319,22 +319,27 @@ function resolveAccess(): Access {
     }
     return { label: "Tailscale (private tailnet)", bindHost: ts, qrHost: ts };
   }
+  // "tailscale-funnel" is the canonical name (makes the Tailscale relationship
+  // visible next to ACCESS=tailscale); "funnel" is accepted as shorthand since
+  // it matches the CLI verb.
+  if (a === "tailscale-funnel" || a === "funnel")
+    return { label: "Tailscale Funnel (public HTTPS)", bindHost: "127.0.0.1", tunnel: "funnel" };
   if (exposeProviderNames().includes(a)) {
-    const label = a === "funnel" ? "Tailscale Funnel (public HTTPS)" : `${a} (public tunnel)`;
     // Loopback-only local bind: the tunnel reaches us over 127.0.0.1, so the
     // port is never exposed on the LAN — only the intended public URL is.
-    return { label, bindHost: "127.0.0.1", tunnel: a };
+    return { label: `${a} (public tunnel)`, bindHost: "127.0.0.1", tunnel: a };
   }
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(a)) return { label: `${a} only`, bindHost: a, qrHost: a };
+  const tunnels = ["tailscale-funnel", ...exposeProviderNames().filter((n) => n !== "funnel")];
   console.error(
-    `error: unknown ACCESS "${a}". Use: lan, local, tailscale, ${exposeProviderNames().join(", ")}, or a literal IP.`,
+    `error: unknown ACCESS "${a}". Use: lan, local, tailscale, ${tunnels.join(", ")}, or a literal IP.`,
   );
   return process.exit(1);
 }
 
 // BIND/EXPOSE were merged into ACCESS; warn rather than silently ignore them.
 if (!process.env.ACCESS && (process.env.BIND || process.env.EXPOSE)) {
-  console.error("note: BIND/EXPOSE were merged into a single ACCESS (e.g. ACCESS=funnel). Ignoring the old vars.");
+  console.error("note: BIND/EXPOSE were merged into a single ACCESS (e.g. ACCESS=tailscale-funnel). Ignoring the old vars.");
 }
 
 const access = resolveAccess();
