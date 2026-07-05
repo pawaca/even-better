@@ -13,7 +13,8 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /\? for shortcuts/i,
   /ctrl\+[a-z] to /i,
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
-  /^\s*[✢✳✶✻✽∗]\s/, // working/thinking spinner line "✻ Inferring… (esc to…"
+  /^\s*[✢✳✶✻✽∗·]\s/, // working/thinking spinner line "✻ Inferring…", "· Shimmying…"
+  /^\s*⏺\s+(Running|Ran)\b.*(…|\.\.\.)/, // transient "⏺ Running 1 shell command…"
   /^\s*[⠀-⣿]/, // braille spinner frames
   /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
   /^\s*interrupt\b.*[)·]/, // continuation row of a wrapped spinner line
@@ -39,27 +40,30 @@ export function filterVolatile(lines: string[]): string[] {
  */
 export function diffNewLines(prev: string[], curr: string[]): string[] {
   if (prev.length === 0) return [];
-  const MIN_RUN = 3;
-  let bestRun = 0;
-  let bestD = 0;
-  for (let d = 0; d < prev.length; d++) {
-    const lim = Math.min(prev.length - d, curr.length);
-    if (lim <= bestRun) break; // can't beat the best anymore
-    let run = 0;
-    while (run < lim && prev[d + run] === curr[run]) run++;
-    if (run > bestRun) {
-      bestRun = run;
-      bestD = d;
-    }
+  // Multiset diff: a line is "new" when it occurs more times in curr than in
+  // prev. This is the only scheme that survives how TUIs actually draw:
+  // - in-place repaints that ADD content (claude paints tool boxes mid-screen
+  //   without scrolling) → new lines emitted exactly once
+  // - in-place repaints that keep content (spinner tick above a code block)
+  //   → counts unchanged, nothing re-emitted, no tail spam
+  // - scrolling, window replacement, recent-region resets → handled, since
+  //   position is ignored entirely
+  // Repeated identical lines (e.g. several "}" rows in code) stay correct
+  // because counts, not membership, are compared. Blank lines are ignored.
+  const prevCount = new Map<string, number>();
+  for (const l of prev) {
+    if (!l.trim()) continue;
+    prevCount.set(l, (prevCount.get(l) ?? 0) + 1);
   }
-  const covered = prev.length - bestD; // curr rows still covered by prev
-  const fullMatch = bestRun === Math.min(covered, curr.length);
-  if (!fullMatch && bestRun < MIN_RUN) return []; // repaint — skip, don't spam
-  // Only rows beyond prev's aligned coverage are new. Rows WITHIN the window
-  // that changed (TUI redraws-in-place: spinners, streaming tail, token
-  // counters) are deliberately dropped — emitting them would re-send
-  // everything below the mutated row on every frame.
-  return covered >= curr.length ? [] : curr.slice(covered);
+  const currCount = new Map<string, number>();
+  const added: string[] = [];
+  for (const l of curr) {
+    if (!l.trim()) continue;
+    const n = (currCount.get(l) ?? 0) + 1;
+    currCount.set(l, n);
+    if (n > (prevCount.get(l) ?? 0)) added.push(l);
+  }
+  return added;
 }
 
 export interface MenuOption {
