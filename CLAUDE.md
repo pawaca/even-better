@@ -26,6 +26,8 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 - **`render.ts`** — pure `string→string` glasses transforms (table reflow, box
   strip). Applied before emit.
 - **`herdr.ts`** — the multiplexer socket client (RPC + subscribe).
+- **`output-stream.ts`** — `OutputStream`: paces text out a few code points per
+  tick (smooth typing) and interleaves whole events (tool_start) in order.
 - **`bridge.ts`** — `PaneBridge`: the core. Turn lifecycle, token accounting,
   the permission/question interaction state machine.
 - **`sse.ts` / `index.ts`** — even-terminal SSE fan-out + HTTP server.
