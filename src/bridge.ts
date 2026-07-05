@@ -93,6 +93,7 @@ export class PaneBridge {
   private tailing = false;
   private lastProse = "";
   private lastProseBlock = "";
+  private droppingProse = false;
 
   constructor(info: AgentInfo) {
     this.paneId = info.pane_id;
@@ -299,6 +300,31 @@ export class PaneBridge {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
+      // When the transcript tail delivers prose, drop the screen-rendered
+      // copies entirely (regardless of arrival order — the substring check in
+      // isProseEcho only works when the jsonl copy arrives first). A prose
+      // block = "⏺ <text>" where <text> is not a tool call / chrome line,
+      // plus its wrapped continuation lines up to the next marker.
+      if (this.tail) {
+        const isMarker =
+          /^⏺\s+[A-Z][\w-]*\(/.test(t) || // tool call "⏺ Bash(…)"
+          /^\s*⎿/.test(line) || // tool result
+          /^\$\s/.test(t) || // command echo
+          /^⏺?\s*(Running|Ran|Reading|Read|Searched|Searching|Editing|Edited|Writing|Wrote|Fetching|Fetched)\b/.test(t);
+        if (/^⏺\s/.test(t) && !isMarker) {
+          this.droppingProse = true;
+          if (STREAM_LOG) console.log(paint("33", `✂ drop(prose→jsonl) ${this.paneId}: ${t.slice(0, 90)}`));
+          continue;
+        }
+        if (this.droppingProse) {
+          if (isMarker) {
+            this.droppingProse = false; // marker line: fall through, emit
+          } else {
+            if (STREAM_LOG) console.log(paint("33", `✂ drop(prose→jsonl) ${this.paneId}: ${t.slice(0, 90)}`));
+            continue;
+          }
+        }
+      }
       if (this.isProseEcho(line)) {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(prose-echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
@@ -346,6 +372,7 @@ export class PaneBridge {
     if (next === "busy" && prev !== "busy") {
       if (!this.turnStartMs) this.turnStartMs = Date.now();
       this.recentlyEmitted.clear(); // new turn — allow repeats of past content
+      this.droppingProse = false;
       emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
     }
 
