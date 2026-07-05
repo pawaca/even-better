@@ -60,10 +60,13 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   be edited. This is *why* we buffer whole prose blocks from the jsonl and
   `renderForGlasses` them before sending — we can fix a table only because we hold
   the complete block first.
-- **Tools render as a plain `⏺ <command>` text line, not `tool_start`/`tool_end`
-  bubbles.** The app labels those bubble events with a "tool end:" prefix that is
-  noise on the tiny panel. Emit one `text_delta` per tool call instead; still
-  track `pendingTools` so a permission request can describe the pending tool.
+- **Tools are shown with `tool_start` only (no `tool_end`).** `tool_start` gives
+  the distinct tool color and carries the command as `summary`; `tool_end` is
+  dropped because the app labels it "tool end:" (noise). Still track
+  `pendingTools` for permission descriptions.
+- **Content events are paced.** `text_delta`/`tool_start` go through a queue
+  (`paced()`, one per `PACE_MS`) so long answers reveal gradually; `result`/idle
+  wait for it to drain. Widgets (status/stats/task_progress) bypass the queue.
 - **Interaction timeouts do not auto-deny.** A blocked pane stays `awaiting`
   until the user answers or the menu clears — no SDK forces a decision on us.
 

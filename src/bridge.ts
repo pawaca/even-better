@@ -38,6 +38,9 @@ const OUTPUT_WINDOW_LINES = 120;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
+// Gap between paced content events. The first item in a burst goes out
+// immediately; the rest follow one per PACE_MS so long answers are readable.
+const PACE_MS = 1000;
 
 interface TodoItem {
   status?: string;
@@ -109,6 +112,13 @@ export class PaneBridge {
   private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
+
+  // Paced content queue: content events (text_delta, tool_start) are released
+  // one every PACE_MS so a long answer reveals gradually instead of arriving in
+  // a burst too fast to read. Widgets (status/stats/task_progress) bypass this;
+  // result/idle wait for it to drain (see emitTurnResult).
+  private outQueue: object[] = [];
+  private pacer: NodeJS.Timeout | null = null;
 
   constructor(info: AgentInfo) {
     this.paneId = info.pane_id;
@@ -207,6 +217,41 @@ export class PaneBridge {
     }
   }
 
+  /** Queue a content event for paced release (first goes out now, rest at
+   *  PACE_MS intervals). Keeps ordering across say chunks and tool lines. */
+  private paced(msg: object): void {
+    this.outQueue.push(msg);
+    if (!this.pacer) this.pumpQueue();
+  }
+
+  private pumpQueue(): void {
+    const msg = this.outQueue.shift();
+    if (!msg) {
+      this.pacer = null;
+      return;
+    }
+    emit(this.paneId, msg);
+    // Speed up when a backlog builds so the glasses never fall far behind the
+    // agent; keep the readable pace when the flow is calm.
+    const delay = this.outQueue.length > 5 ? 300 : PACE_MS;
+    this.pacer = setTimeout(() => this.pumpQueue(), delay);
+  }
+
+  /** Wait until the paced queue has fully drained (used before result/idle). */
+  private async drainPaced(): Promise<void> {
+    while (this.outQueue.length > 0 || this.pacer) {
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  }
+
+  private clearPaced(): void {
+    this.outQueue = [];
+    if (this.pacer) {
+      clearTimeout(this.pacer);
+      this.pacer = null;
+    }
+  }
+
   /** While a turn runs, push a live elapsed/token counter every 10s. The app
    *  renders `running_stats` as a single widget it overwrites in place. */
   private startStats(): void {
@@ -297,11 +342,11 @@ export class PaneBridge {
         const text = e.text.trim();
         if (!text) return;
         this.lastProseBlock = text; // keep the raw text for the turn result
-        // Ship a long block as several smaller text_deltas so the glasses render
-        // it progressively rather than as one large blob that arrives at once.
+        // Split a long block into chunks and pace them out so the glasses
+        // reveal it gradually instead of in one burst too fast to read.
         const rendered = renderForGlasses(text);
         for (const chunk of chunkForGlasses(rendered)) {
-          emit(this.paneId, { type: "text_delta", text: chunk + "\n" });
+          this.paced({ type: "text_delta", text: chunk + "\n" });
         }
         return;
       }
@@ -316,17 +361,21 @@ export class PaneBridge {
           if (progress) emit(this.paneId, { type: "task_progress", ...progress });
           return; // no start/end correlation for todos
         }
-        // Track the pending tool so a permission request can describe it, then
-        // show it as one clean text line. We deliberately do NOT use the
-        // tool_start/tool_end bubble events: the app labels those with a
-        // "tool end:" prefix that is noise on the tiny panel. A single
-        // "⏺ <command>" line reads better and can't double-render.
+        // Track the pending tool so a permission request can describe it. Show
+        // it with a tool_start event (the app styles tool events in a distinct
+        // color) carrying the command as its summary; we drop tool_end to avoid
+        // the app's "tool end:" label. Paced so it keeps order with say chunks.
         this.pendingTools.set(e.id, { name: e.name, input: e.input });
         if (this.pendingTools.size > 100) {
           const first = this.pendingTools.keys().next().value;
           if (first) this.pendingTools.delete(first);
         }
-        emit(this.paneId, { type: "text_delta", text: `⏺ ${summarizeTool(e.name, e.input)}\n` });
+        this.paced({
+          type: "tool_start",
+          name: e.name,
+          toolId: e.id,
+          summary: summarizeTool(e.name, e.input),
+        });
         return;
       }
       case "toolResult": {
@@ -376,6 +425,7 @@ export class PaneBridge {
     if (next === "busy" && prev !== "busy") {
       if (!this.turnStartMs) this.turnStartMs = Date.now();
       this.screen?.resetTurn(); // new turn — allow repeats of past content
+      this.clearPaced(); // drop any stale content from a prior turn
       this.turnInputTokens = 0;
       this.turnOutputTokens = 0;
       this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
@@ -514,6 +564,10 @@ export class PaneBridge {
     if (this.onTranscript) {
       await new Promise((r) => setTimeout(r, 1100));
     }
+    // Let the paced content finish streaming before the result/idle close it
+    // out — otherwise idle would land before the last chunks and the app would
+    // get stuck showing activity again.
+    await this.drainPaced();
     let text = "";
     if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
@@ -549,6 +603,7 @@ export class PaneBridge {
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
     this.screen?.resetTurn(); // new turn — allow repeats of past content
+    this.clearPaced(); // drop any stale content from a prior turn
     // remember our injected prompt so both the timeline's record of it (core)
     // and its wrapped screen echo (ScreenTimeline) are suppressed as duplicates.
     this.recentTyped = text.replace(/\s+/g, "");
@@ -709,6 +764,7 @@ export class PaneBridge {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.clearProbe();
     this.stopStats();
+    this.clearPaced();
     this.timeline?.dispose();
     this.sub?.close();
     console.log(`[bridge ${this.paneId}] disposed`);
