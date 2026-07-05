@@ -1,4 +1,5 @@
 import {
+  agentExplain,
   agentList,
   paneRead,
   paneExists,
@@ -6,10 +7,12 @@ import {
   sendInput,
   subscribe,
   typeAndSubmit,
+  type AgentExplain,
   type AgentInfo,
   type SubscribeHandle,
 } from "./herdr.js";
 import { emit } from "./sse.js";
+import { logEvent } from "./log.js";
 import {
   findSessionFile,
   summarizeTool,
@@ -139,6 +142,9 @@ export class PaneBridge {
       (event, data) => this.onHerdrEvent(event, data),
       () => this.onSubClosed(),
     );
+    // A pane can already be blocked when the bridge discovers it (e.g. trust
+    // dialog on startup) — no transition event will fire, so emit the menu now.
+    if (this.state === "awaiting") void this.emitBlockedMenu();
     // Transcript tail is the primary content channel; screen polling is the
     // fallback for panes without a readable transcript (codex, plain agents).
     this.startTranscriptTail();
@@ -441,42 +447,61 @@ export class PaneBridge {
   }
 
   private async emitBlockedMenu(): Promise<void> {
+    // Give the TUI a beat to finish painting the menu before reading it.
+    await new Promise((r) => setTimeout(r, 400));
+    if (this.state !== "awaiting") return; // resolved in the meantime
+
+    // Three sources, each for what it is best at:
+    //  - herdr agent.explain → which detection rule fired (menu TYPE)
+    //  - transcript pendingTools → which tool is awaiting approval (CONTENT)
+    //  - screen parse → the option labels/digits (CHOICES)
     let screen = "";
     try {
       screen = await paneRead(this.paneId, "visible", 45);
     } catch {
       return;
     }
-    const menu = parseMenu(screen);
-    if (!menu) {
-      emit(this.paneId, {
-        type: "notification",
-        title: "Agent blocked",
-        message: "Agent is waiting for input in the terminal",
-      });
-      return;
+    let explain: AgentExplain = {};
+    try {
+      explain = await agentExplain(this.paneId);
+    } catch {
+      // explain unavailable — fall back to screen classification alone
     }
-    const classified = classifyMenu(menu);
-    this.currentMenu = { ...menu, ...classified };
+    const menu = parseMenu(screen);
+    const classified = menu ? classifyMenu(menu) : null;
+    const pendingTool = [...this.pendingTools.values()].pop();
 
-    if (classified.kind === "permission") {
-      const options: { text: string; key: string }[] = [
-        { text: classified.allow?.label ?? "Yes", key: "allow" },
-      ];
-      if (classified.allowAlways) {
-        options.push({ text: classified.allowAlways.label, key: "allowAlways" });
+    logEvent("diag", this.paneId, {
+      blocked: {
+        rule: explain.rule ?? null,
+        evidence: explain.evidence?.slice(0, 200) ?? null,
+        parsedOptions: menu?.options ?? null,
+        parsedTitle: menu?.title ?? null,
+        classified: classified?.kind ?? null,
+        pendingTool: pendingTool ? summarizeTool(pendingTool.name, pendingTool.input) : null,
+        screenTail: screen.slice(-1200),
+      },
+    });
+
+    // Menu type: trust herdr's rule id first, screen classification second.
+    const rule = explain.rule ?? "";
+    const kind: "permission" | "question" =
+      /form|workflow/.test(rule)
+        ? "question"
+        : /permission|blocker/.test(rule)
+          ? "permission"
+          : (classified?.kind ?? "permission");
+
+    if (kind === "question") {
+      if (!menu) {
+        emit(this.paneId, {
+          type: "notification",
+          title: "Agent 等待输入",
+          message: "终端上有一个无法解析的表单,请到终端处理",
+        });
+        return;
       }
-      options.push({ text: classified.deny?.label ?? "No", key: "deny" });
-      emit(this.paneId, {
-        type: "permission_request",
-        toolName: this.agent,
-        description: menu.title || "Permission required",
-        detail: menu.title,
-        toolUseId: `${this.paneId}-${Date.now()}`,
-        options,
-        suggestions: null,
-      });
-    } else {
+      this.currentMenu = { ...menu, ...classifyMenu(menu) };
       emit(this.paneId, {
         type: "user_question",
         questions: [
@@ -492,7 +517,45 @@ export class PaneBridge {
         ],
         toolUseId: `${this.paneId}-${Date.now()}`,
       });
+      return;
     }
+
+    // Permission: options from the parsed menu, or synthesized standard ones
+    // (claude permission menus are highly regular: 1=Yes … last=No/Esc).
+    const effective: ParsedMenu & ClassifiedMenu =
+      menu && classified?.kind === "permission"
+        ? { ...menu, ...classified }
+        : {
+            title: "",
+            options: [
+              { digit: "1", label: "Yes" },
+              { digit: "", label: "No (esc)" },
+            ],
+            kind: "permission",
+            allow: { digit: "1", label: "Yes" },
+            deny: { digit: "", label: "No" },
+          };
+    this.currentMenu = effective;
+
+    const description = pendingTool
+      ? summarizeTool(pendingTool.name, pendingTool.input)
+      : effective.title || "Permission required";
+    const options: { text: string; key: string }[] = [
+      { text: effective.allow?.label ?? "Yes", key: "allow" },
+    ];
+    if (effective.allowAlways) {
+      options.push({ text: effective.allowAlways.label, key: "allowAlways" });
+    }
+    options.push({ text: effective.deny?.label ?? "No", key: "deny" });
+    emit(this.paneId, {
+      type: "permission_request",
+      toolName: pendingTool?.name ?? this.agent,
+      description,
+      detail: effective.title || description,
+      toolUseId: `${this.paneId}-${Date.now()}`,
+      options,
+      suggestions: null,
+    });
   }
 
   private async emitTurnResult(): Promise<void> {
@@ -547,29 +610,79 @@ export class PaneBridge {
     }
   }
 
+  /** Wait until the pane leaves "awaiting" (menu resolved). State is updated
+   *  by herdr status events, so no extra reads are needed. */
+  private async waitUnblocked(ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (this.state !== "awaiting") return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return this.state !== "awaiting";
+  }
+
+  /** Press keys for a decision, verify the menu actually resolved, and walk a
+   *  fallback ladder when it did not. Never guess silently: if nothing works,
+   *  tell the app to use the terminal.
+   *
+   *  `steps` is a sequence of key presses delivered as SEPARATE send_input
+   *  calls with a gap between them: bundling e.g. ["Down","Enter"] into one
+   *  call races the TUI (Enter processed before the highlight moves), which
+   *  silently picks the wrong option. */
+  private async pressAndVerify(
+    attempts: { label: string; steps: { text?: string; keys?: string[] }[] }[],
+  ): Promise<{ ok: boolean; used: string }> {
+    for (const a of attempts) {
+      try {
+        for (let i = 0; i < a.steps.length; i++) {
+          const step = a.steps[i];
+          await sendInput(this.paneId, step.text ?? "", step.keys);
+          if (i < a.steps.length - 1) await new Promise((r) => setTimeout(r, 250));
+        }
+      } catch {
+        continue;
+      }
+      const ok = await this.waitUnblocked(4000);
+      logEvent("diag", this.paneId, { permissionAttempt: a.label, cleared: ok });
+      if (ok) return { ok: true, used: a.label };
+    }
+    return { ok: false, used: "" };
+  }
+
   async respondPermission(decision: string): Promise<void> {
     const menu = this.currentMenu;
     this.currentMenu = null;
+    const attempts: { label: string; steps: { text?: string; keys?: string[] }[] }[] = [];
     let summary = "";
-    try {
-      if (decision === "allow" && menu?.allow) {
-        summary = menu.allow.label;
-        await sendInput(this.paneId, menu.allow.digit);
-      } else if (decision === "allowAlways" && menu?.allowAlways) {
-        summary = menu.allowAlways.label;
-        await sendInput(this.paneId, menu.allowAlways.digit);
-      } else if (decision === "allow" || decision === "allowAlways") {
-        summary = "Yes";
-        await sendInput(this.paneId, "", ["Enter"]);
-      } else if (menu?.deny) {
-        summary = menu.deny.label;
-        await sendInput(this.paneId, menu.deny.digit);
-      } else {
-        summary = "No";
-        await sendInput(this.paneId, "", ["Escape"]);
-      }
-    } catch (err) {
-      console.error(`[bridge ${this.paneId}] respondPermission failed:`, err);
+    // Key behaviour (measured on claude 2.x menus): number keys do NOT select;
+    // Enter confirms the HIGHLIGHTED option (default = option 1 = Yes), arrow
+    // keys move the highlight, Escape cancels. Multi-key sequences (Down then
+    // Enter) MUST be separate presses — bundling races the highlight update.
+    if (decision === "allowAlways") {
+      const opt = menu?.allowAlways;
+      summary = opt?.label ?? "Yes (always)";
+      // move highlight to option 2 ("allow all this session"), then confirm
+      attempts.push({ label: "down+enter", steps: [{ keys: ["Down"] }, { keys: ["Enter"] }] });
+      if (opt?.digit) attempts.push({ label: `digit:${opt.digit}`, steps: [{ text: opt.digit }] });
+      // degrade to allow-once rather than leaving the menu stuck
+      attempts.push({ label: "enter(allow-once)", steps: [{ keys: ["Enter"] }] });
+    } else if (decision === "allow") {
+      summary = menu?.allow?.label ?? "Yes";
+      attempts.push({ label: "enter", steps: [{ keys: ["Enter"] }] });
+      if (menu?.allow?.digit) attempts.push({ label: `digit:${menu.allow.digit}`, steps: [{ text: menu.allow.digit }] });
+    } else {
+      summary = menu?.deny?.label ?? "No";
+      attempts.push({ label: "escape", steps: [{ keys: ["Escape"] }] });
+      if (menu?.deny?.digit) attempts.push({ label: `digit:${menu.deny.digit}`, steps: [{ text: menu.deny.digit }] });
+    }
+    const r = await this.pressAndVerify(attempts);
+    if (!r.ok) {
+      emit(this.paneId, {
+        type: "notification",
+        title: "确认未生效",
+        message: "自动按键未能关闭终端里的确认菜单,请到终端处理",
+      });
+      return;
     }
     emit(this.paneId, {
       type: "permission_result",
@@ -592,25 +705,40 @@ export class PaneBridge {
       // plain string
     }
     const norm = label.trim().toLowerCase();
-    const match = menu?.options.find(
+    const idx = menu?.options.findIndex(
       (o) =>
         o.label.toLowerCase() === norm ||
         o.label.toLowerCase().startsWith(norm) ||
         norm.startsWith(o.label.toLowerCase()),
     );
-    try {
-      if (match) {
-        await sendInput(this.paneId, match.digit);
-      } else {
-        // Free-text answer: type it and submit.
-        this.recentTyped = label.replace(/\s+/g, "");
-        this.recentTypedAt = Date.now();
-        await typeAndSubmit(this.paneId, label);
+    if (menu && idx !== undefined && idx >= 0) {
+      // Navigate by arrows: the menu opens with option 0 highlighted; press
+      // Down idx times, then Enter (separate presses to avoid the race).
+      const steps: { text?: string; keys?: string[] }[] = [];
+      for (let i = 0; i < idx; i++) steps.push({ keys: ["Down"] });
+      steps.push({ keys: ["Enter"] });
+      const r = await this.pressAndVerify([{ label: `arrows×${idx}+enter`, steps }]);
+      if (!r.ok) {
+        emit(this.paneId, {
+          type: "notification",
+          title: "选择未生效",
+          message: "自动按键未能提交选项,请到终端处理",
+        });
+        return;
       }
-    } catch (err) {
-      console.error(`[bridge ${this.paneId}] respondQuestion failed:`, err);
+      emit(this.paneId, { type: "question_answer", answers: { answer: label } });
+    } else {
+      // No matching option. Free text into an arrow-select form is unreliable
+      // (typing acts as navigation and can silently confirm the wrong option),
+      // so refuse to guess — tell the user to answer in the terminal. The menu
+      // stays open (nothing pressed), so nothing is lost.
+      logEvent("diag", this.paneId, { questionNoMatch: label.slice(0, 60) });
+      emit(this.paneId, {
+        type: "notification",
+        title: "无法匹配选项",
+        message: `"${label.slice(0, 30)}" 不在选项里,请在终端里回答`,
+      });
     }
-    emit(this.paneId, { type: "question_answer", answers: { answer: label } });
   }
 
   async interrupt(): Promise<void> {

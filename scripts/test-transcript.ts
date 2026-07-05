@@ -27,3 +27,6 @@ t("thinking", parseEntry(JSON.stringify({type:"assistant", message:{content:[{ty
 t("sum-bash", summarizeTool("Bash", {command:"grep -r foo ."}), "$ grep -r foo .");
 t("sum-read", summarizeTool("Read", {file_path:"/a/b.ts"}), "Read /a/b.ts");
 t("sum-unknown", summarizeTool("MyTool", {q:"hello"}), "MyTool: hello");
+
+// permission-path summaries
+t("sum-write", summarizeTool("Write", {file_path:"/a/b.txt"}), "Write /a/b.txt");

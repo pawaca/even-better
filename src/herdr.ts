@@ -14,6 +14,7 @@ const SAFE_METHODS = new Set([
   "pane.read",
   "pane.send_input",
   "events.subscribe",
+  "agent.explain",
   // used by the self-test only:
   "workspace.create",
   "workspace.close",
@@ -206,6 +207,43 @@ export async function typeAndSubmit(paneId: string, text: string): Promise<void>
     }
   }
   await sendInput(paneId, "", ["Enter"]);
+}
+
+export interface AgentExplain {
+  rule?: string;
+  state?: string;
+  evidence?: string;
+}
+
+interface EvaluatedRule {
+  id?: string;
+  state?: string;
+  priority?: number;
+  matched?: boolean;
+  evidence?: { region_preview?: string };
+}
+
+/** Ask herdr WHY it classified a pane's agent state — which detection rule
+ *  matched. The socket returns every evaluated rule with a `matched` flag; we
+ *  reduce to the highest-priority matched rule (what the CLI reports as the
+ *  active `rule:`). Used to type blocked menus without our own regexes. */
+export async function agentExplain(target: string): Promise<AgentExplain> {
+  const r = await call<{ explain?: { evaluated_rules?: EvaluatedRule[]; state?: string } }>(
+    "agent.explain",
+    { target },
+  );
+  const e = r.explain;
+  const rules = e?.evaluated_rules ?? [];
+  let best: EvaluatedRule | undefined;
+  for (const rule of rules) {
+    if (!rule.matched) continue;
+    if (!best || (rule.priority ?? 0) > (best.priority ?? 0)) best = rule;
+  }
+  return {
+    rule: best?.id,
+    state: best?.state ?? e?.state,
+    evidence: best?.evidence?.region_preview,
+  };
 }
 
 /** Current agent session id of a pane, if herdr has detected one. */
