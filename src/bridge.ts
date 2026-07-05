@@ -225,12 +225,16 @@ export class PaneBridge {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      const emittedAt = this.recentlyEmitted.get(t);
+      // Dedupe key ignores the leading "⏺" bullet: claude renders the same
+      // status line both standalone and bullet-prefixed ("Running 1 shell
+      // command…" / "⏺ Running 1 shell command…").
+      const key = t.replace(/^⏺\s*/, "");
+      const emittedAt = this.recentlyEmitted.get(key);
       if (emittedAt !== undefined && Date.now() - emittedAt < DEDUPE_WINDOW_MS) {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(dupe) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      this.recentlyEmitted.set(t, Date.now());
+      this.recentlyEmitted.set(key, Date.now());
       out.push(line);
     }
     // prune expired dedupe entries so the map stays bounded

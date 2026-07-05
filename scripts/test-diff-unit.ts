@@ -26,3 +26,8 @@ t("norm-trunc  ", normalizeLine("     deltas = [e for e in events… (3s)"), "  
 t("norm-box    ", normalizeLine("  ⎿  $ echo hi (0s)"), "  ⎿  $ echo hi");
 t("norm-keep   ", normalizeLine("正文里提到 (3s) 不在行尾x"), "正文里提到 (3s) 不在行尾x");
 t("norm-plain  ", normalizeLine("plain text ends (3s)"), "plain text ends (3s)");
+
+// audit round: unclosed duration suffix, lone bullet
+t("norm-uncls  ", normalizeLine('     deltas = [e for e in events… (3s'), "     deltas = [e for e in events…");
+t("norm-uncls2 ", normalizeLine('     deltas = [e for e in events… (4s'), "     deltas = [e for e in events…");
+t("filter-bullet", filterVolatile(["⏺", "  ⏺  ", "⏺ real text"]), ["⏺ real text"]);

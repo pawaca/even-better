@@ -14,6 +14,7 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /ctrl\+[a-z] to /i,
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
   /^\s*[✢✳✶✻✽∗·]\s/, // working/thinking spinner line "✻ Inferring…", "· Shimmying…"
+  /^\s*⏺\s*$/, // lone bullet painted before its text streams in
   /^\s*>\s/, // user prompt echo — the app already renders user_prompt itself
   /^\s*[⠀-⣿]/, // braille spinner frames
   /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
@@ -37,8 +38,13 @@ export function filterVolatile(lines: string[]): string[] {
  * one, so the multiset diff neither re-emits nor drops it.
  */
 export function normalizeLine(l: string): string {
-  const hasDuration = /\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/.test(l);
-  if (hasDuration && (l.includes("…") || /^\s*⎿/.test(l))) {
+  // Width truncation can also cut the suffix itself, leaving "… (3s" with no
+  // closing paren — and the seconds tick each redraw, so every variant would
+  // re-emit. Accept an unclosed paren when the ellipsis directly precedes it.
+  if (/…\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)?\s*$/.test(l)) {
+    return l.replace(/\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)?\s*$/, "");
+  }
+  if (/^\s*⎿/.test(l) && /\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/.test(l)) {
     return l.replace(/\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/, "");
   }
   return l;
