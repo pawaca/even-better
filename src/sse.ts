@@ -71,7 +71,10 @@ export function sseHandler(req: Request, res: Response): void {
 
   const s = bufFor(sessionId);
   if (req.query.needReplay === "true" && s.messages.length > 0) {
-    for (const entry of s.messages) {
+    // Cap the replay: the pane may have produced hours of output while no
+    // client was connected, and dumping the whole buffer floods the glasses.
+    const REPLAY_MAX = 20;
+    for (const entry of s.messages.slice(-REPLAY_MAX)) {
       res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.msg)}\n\n`);
     }
   }

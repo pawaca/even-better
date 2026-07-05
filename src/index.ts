@@ -57,7 +57,24 @@ api.use((req, _res, next) => {
 
 // ── even-terminal protocol surface ─────────────────────
 
-api.get("/events", sseHandler);
+api.get("/events", (req, res) => {
+  sseHandler(req, res);
+  // Push a status snapshot to the fresh client so it knows immediately
+  // whether a turn is running. Without this, an app that connects while the
+  // agent is idle waits forever for a status/result that never comes (status
+  // events are only emitted on transitions).
+  const sessionId = req.query.sessionId as string | undefined;
+  if (sessionId) {
+    const bridge = getBridge(sessionId);
+    if (bridge) {
+      emit(sessionId, {
+        type: "status",
+        state: bridge.state === "idle" ? "idle" : "busy",
+        sessionId,
+      });
+    }
+  }
+});
 
 api.get("/sessions", async (_req, res) => {
   try {

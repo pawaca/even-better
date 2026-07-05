@@ -20,6 +20,11 @@ import {
 } from "./parse.js";
 
 const OUTPUT_WINDOW_LINES = 120;
+// Scrollback window for streaming reads. The visible screen (~45 rows) is too
+// small: fast output scrolls through it between polls and the lines are lost.
+// recent_unwrapped accumulates scrolled-off content, so a 300-line window
+// tolerates ~500 lines/s of sustained output at a 600ms poll interval.
+const RECENT_WINDOW_LINES = 300;
 const FLUSH_INTERVAL_MS = 400;
 // pane.output_matched is edge-triggered (fires only when the first regex-
 // matching line changes), so it cannot serve as an output firehose. We poll
@@ -83,7 +88,7 @@ export class PaneBridge {
     // diffs against the real current screen instead of being swallowed as
     // baseline (which would drop the first response).
     try {
-      const text = await paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES);
+      const text = await this.readPane();
       this.lastLines = filterVolatile(text.split("\n"));
     } catch {
       this.lastLines = [];
@@ -108,7 +113,7 @@ export class PaneBridge {
     this.pollTimer = setInterval(() => {
       if (this.polling) return;
       this.polling = true;
-      paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES)
+      this.readPane()
         .then((text) => this.onOutput(text))
         .catch((err: Error) => {
           if (process.env.DEBUG_POLL === "1") {
@@ -119,6 +124,14 @@ export class PaneBridge {
           this.polling = false;
         });
     }, POLL_INTERVAL_MS);
+  }
+
+  /** Read the pane's recent scrollback; fall back to the visible screen for
+   *  young panes whose content has never scrolled (recent comes back empty). */
+  private async readPane(): Promise<string> {
+    const recent = await paneRead(this.paneId, "recent_unwrapped", RECENT_WINDOW_LINES);
+    if (recent.trim()) return recent;
+    return paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES);
   }
 
   private onSubClosed(): void {
@@ -268,11 +281,7 @@ export class PaneBridge {
     emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
     let text = "";
     try {
-      let raw = await paneRead(this.paneId, "recent_unwrapped", OUTPUT_WINDOW_LINES);
-      if (!raw.trim()) {
-        // recent scrollback is empty until content scrolls off-screen
-        raw = await paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES);
-      }
+      const raw = await this.readPane();
       text = extractResult(raw.split("\n"));
     } catch {
       // pane may be gone; result stays empty
