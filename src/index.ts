@@ -321,14 +321,27 @@ const bind = resolveBind();
 const server = app.listen(PORT, bind.host, async () => {
   const lan = lanAddress();
   const ts = tailscaleAddress();
+  // Addresses that are actually reachable given the bind. `qr` marks the ones
+  // a phone can connect to (localhost can't be, so it's info-only). When bound
+  // to a specific interface, only that one is reachable — localhost included is
+  // NOT bound, so it isn't listed.
+  const reachable: { label: string; host: string; qr: boolean }[] =
+    bind.host === "0.0.0.0"
+      ? [
+          { label: "Local", host: "localhost", qr: false },
+          ...(lan ? [{ label: "LAN", host: lan, qr: true }] : []),
+          ...(ts ? [{ label: "Tailscale", host: ts, qr: true }] : []),
+        ]
+      : [{ label: bind.label, host: bind.host, qr: true }];
+
   console.log("");
   console.log(`  even-better v${VERSION}`);
-  console.log(`  Bind      : ${bind.host} (${bind.label})`);
-  console.log(`  Local     : http://localhost:${PORT}`);
-  if (lan) console.log(`  LAN       : http://${lan}:${PORT}`);
-  if (ts) console.log(`  Tailscale : http://${ts}:${PORT}`);
-  console.log(`  Token     : ${TOKEN}`);
-  console.log(`  Log       : ${eventLogPath}`);
+  console.log(`  Bind  : ${bind.host} (${bind.label})`);
+  for (const { label, host } of reachable) {
+    console.log(`  ${label.padEnd(5)} : http://${host}:${PORT}`);
+  }
+  console.log(`  Token : ${TOKEN}`);
+  console.log(`  Log   : ${eventLogPath}`);
   console.log("");
   try {
     const agents = await refreshAgents();
@@ -341,20 +354,10 @@ const server = app.listen(PORT, bind.host, async () => {
   } catch (err) {
     console.error(`  herdr : NOT REACHABLE — ${(err as Error).message}`);
   }
-  // Only advertise addresses that are actually reachable given the bind. When
-  // bound to all, offer both LAN and Tailscale; when bound to one interface,
-  // only that one is reachable, so only its QR is shown.
-  const all = [
-    lan ? { label: "LAN", host: lan } : null,
-    ts ? { label: "Tailscale", host: ts } : null,
-  ].filter((x): x is { label: string; host: string } => x !== null);
-  const targets =
-    bind.host === "0.0.0.0"
-      ? all.length
-        ? all
-        : [{ label: "Local", host: "localhost" }]
-      : [{ label: bind.label, host: bind.host }];
-  for (const { label, host } of targets) {
+  // QR only for addresses a phone can reach; if none (offline, bound to all),
+  // fall back to localhost so there is at least something for same-machine use.
+  const qrTargets = reachable.filter((r) => r.qr);
+  for (const { label, host } of qrTargets.length ? qrTargets : [{ label: "Local", host: "localhost" }]) {
     const url = urlFor(host);
     console.log("");
     console.log(`  ${label}: ${url}`);
