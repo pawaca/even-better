@@ -102,9 +102,10 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 
 ## Caveats
 
-- Output is reconstructed from the rendered terminal, not structured SDK
-  events: tool call summaries, token stats, and cost are not available
-  (`result.costUsd` is always 0).
+- Cost isn't computed (`result.costUsd` is always 0); token counts are reported.
+- For panes without a readable transcript (codex, or a fresh claude before its
+  session id appears), output falls back to lossy screen scraping until the
+  transcript is available.
 - Permission menus are parsed heuristically from the screen; exotic prompts
   fall back to a "check your terminal" notification.
 - The bridge only *mirrors* agents — starting a brand-new session from the
