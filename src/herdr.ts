@@ -183,6 +183,31 @@ export async function sendInput(
   await call("pane.send_input", params);
 }
 
+/**
+ * Type text into a pane and submit it with a real Enter key, in two separate
+ * send_input calls. Sending text+keys together makes TUI line editors (claude
+ * prompt box, zsh ZLE) treat the Enter as part of the paste and the text just
+ * sits unsubmitted. Between the two steps we wait (bounded) until the pane
+ * visibly echoes the text, mirroring herdr-plus's runCommand pacing.
+ */
+export async function typeAndSubmit(paneId: string, text: string): Promise<void> {
+  await sendInput(paneId, text);
+  const probe = text.split("\n")[0].slice(0, 12).trim();
+  if (probe) {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try {
+        const visible = await paneRead(paneId, "visible", 40);
+        if (visible.includes(probe)) break;
+      } catch {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  await sendInput(paneId, "", ["Enter"]);
+}
+
 export async function paneExists(paneId: string): Promise<boolean> {
   try {
     await call("pane.get", { pane_id: paneId });

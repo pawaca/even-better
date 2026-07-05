@@ -4,6 +4,7 @@ import {
   paneExists,
   sendInput,
   subscribe,
+  typeAndSubmit,
   type AgentInfo,
   type SubscribeHandle,
 } from "./herdr.js";
@@ -293,7 +294,7 @@ export class PaneBridge {
 
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
-    await sendInput(this.paneId, text, ["Enter"]);
+    await typeAndSubmit(this.paneId, text);
     if (this.state !== "busy") {
       this.turnStartMs = Date.now();
       this.state = "busy";
@@ -357,7 +358,7 @@ export class PaneBridge {
         await sendInput(this.paneId, match.digit);
       } else {
         // Free-text answer: type it and submit.
-        await sendInput(this.paneId, label, ["Enter"]);
+        await typeAndSubmit(this.paneId, label);
       }
     } catch (err) {
       console.error(`[bridge ${this.paneId}] respondQuestion failed:`, err);
