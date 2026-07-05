@@ -9,6 +9,7 @@ import {
   type SubscribeHandle,
 } from "./herdr.js";
 import { emit } from "./sse.js";
+import { findSessionFile, TranscriptTail } from "./transcript.js";
 import {
   classifyMenu,
   diffNewLines,
@@ -16,6 +17,7 @@ import {
   filterVolatile,
   normalizeLine,
   parseMenu,
+  stripDurationTail,
   type ClassifiedMenu,
   type ParsedMenu,
 } from "./parse.js";
@@ -30,20 +32,21 @@ function paint(code: string, s: string): string {
 }
 
 const OUTPUT_WINDOW_LINES = 120;
-// Scrollback window for streaming reads. The visible screen (~45 rows) is too
-// small: fast output scrolls through it between polls and the lines are lost.
-// recent_unwrapped accumulates scrolled-off content, so a 300-line window
-// tolerates ~500 lines/s of sustained output at a 600ms poll interval.
-const RECENT_WINDOW_LINES = 300;
 const FLUSH_INTERVAL_MS = 400;
 // pane.output_matched is edge-triggered (fires only when the first regex-
 // matching line changes), so it cannot serve as an output firehose. We poll
-// the pane instead; a unix-socket read of ≤120 lines every 600ms is cheap.
-const POLL_INTERVAL_MS = 600;
+// the visible screen instead. IMPORTANT: "visible" is the only source that
+// reliably carries streaming assistant prose — herdr's "recent" region picks
+// up finalized blocks (tool boxes, diffs) but skips in-place-streamed text,
+// which silently loses whole messages. Fast scroll is covered by the 300ms
+// cadence plus the multiset diff emitting full window replacements.
+const POLL_INTERVAL_MS = 300;
 // A line emitted within this window is not emitted again. Catches "flapping"
-// TUI lines (e.g. "Running 1 shell command…") that toggle present/absent
-// across polls, which position-independent multiset diffing re-detects as new.
-const DEDUPE_WINDOW_MS = 30_000;
+// TUI lines (e.g. "Running 1 shell command…") that toggle present/absent and
+// re-render in bullet/bare variants across polls. The map is cleared on every
+// turn boundary, so the window is effectively "once per turn" — long enough to
+// kill chrome re-renders 40s apart, while cross-turn repeats stay visible.
+const DEDUPE_WINDOW_MS = 600_000;
 
 export type AppState = "idle" | "busy" | "awaiting";
 
@@ -68,6 +71,7 @@ export class PaneBridge {
   readonly paneId: string;
   agent: string;
   cwd: string;
+  agentSessionId: string | undefined;
   state: AppState = "idle";
 
   private sub: SubscribeHandle | null = null;
@@ -84,10 +88,17 @@ export class PaneBridge {
   private currentMenu: (ParsedMenu & ClassifiedMenu) | null = null;
   private disposed = false;
 
+  private tail: TranscriptTail | null = null;
+  private tailTimer: NodeJS.Timeout | null = null;
+  private tailing = false;
+  private lastProse = "";
+  private lastProseBlock = "";
+
   constructor(info: AgentInfo) {
     this.paneId = info.pane_id;
     this.agent = info.agent;
     this.cwd = info.cwd;
+    this.agentSessionId = info.agent_session?.value;
     this.state = mapStatus(info.agent_status);
   }
 
@@ -120,6 +131,71 @@ export class PaneBridge {
       () => this.onSubClosed(),
     );
     this.startPolling();
+    this.startTranscriptTail();
+  }
+
+  /** Public hook for the manager to (re)try tailing once a session id shows up. */
+  startTailIfNeeded(): void {
+    this.startTranscriptTail();
+  }
+
+  /** Prose comes from the agent's session transcript (jsonl) — the screen
+   *  stops rendering intermediate text in long tool-heavy turns, but the
+   *  transcript never misses a message. Screen polling still covers tool
+   *  activity, menus, and non-claude agents. */
+  private startTranscriptTail(): void {
+    if (this.tailTimer || this.disposed) return;
+    if (this.agent !== "claude" || !this.agentSessionId) return;
+    const file = findSessionFile(this.agentSessionId);
+    if (!file) return;
+    try {
+      this.tail = new TranscriptTail(file);
+    } catch {
+      return;
+    }
+    console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
+    this.tailTimer = setInterval(() => {
+      if (this.tailing || !this.tail) return;
+      this.tailing = true;
+      this.tail
+        .readNew()
+        .then((blocks) => {
+          for (const block of blocks) this.onProse(block);
+        })
+        .catch(() => {
+          // transient read error; next tick retries
+        })
+        .finally(() => {
+          this.tailing = false;
+        });
+    }, 500);
+  }
+
+  private onProse(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // remember for screen-echo suppression (rendered copies of the same prose)
+    this.lastProse = (this.lastProse + "\n" + trimmed).slice(-8000);
+    this.lastProseBlock = trimmed;
+    if (STREAM_LOG) {
+      console.log(paint("32", `► send ${this.paneId} prose ${trimmed.length} chars`));
+    }
+    emit(this.paneId, { type: "text_delta", text: trimmed + "\n" });
+  }
+
+  /** True when a screen line is a rendered copy of prose already delivered
+   *  from the transcript (normalized: whitespace collapsed, table borders
+   *  mapped back to pipes). */
+  private isProseEcho(line: string): boolean {
+    if (!this.lastProse) return false;
+    const norm = line
+      .replace(/^⏺\s*/, "")
+      .replace(/[│┃]/g, "|")
+      .replace(/[─═┌┬┐└┴┘├┼┤]/g, "")
+      .replace(/\s+/g, "");
+    if (norm.length < 6) return false;
+    const hay = this.lastProse.replace(/\s+/g, "").replace(/\|/g, "|");
+    return hay.includes(norm);
   }
 
   private startPolling(): void {
@@ -143,11 +219,9 @@ export class PaneBridge {
     }, POLL_INTERVAL_MS);
   }
 
-  /** Read the pane's recent scrollback; fall back to the visible screen for
-   *  young panes whose content has never scrolled (recent comes back empty). */
+  /** Read the pane's visible screen — the one source that carries everything
+   *  the user sees, including streaming prose (see POLL_INTERVAL_MS note). */
   private async readPane(): Promise<string> {
-    const recent = await paneRead(this.paneId, "recent_unwrapped", RECENT_WINDOW_LINES);
-    if (recent.trim()) return recent;
     return paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES);
   }
 
@@ -225,10 +299,15 @@ export class PaneBridge {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      // Dedupe key ignores the leading "⏺" bullet: claude renders the same
-      // status line both standalone and bullet-prefixed ("Running 1 shell
-      // command…" / "⏺ Running 1 shell command…").
-      const key = t.replace(/^⏺\s*/, "");
+      if (this.isProseEcho(line)) {
+        if (STREAM_LOG) console.log(paint("33", `✂ drop(prose-echo) ${this.paneId}: ${t.slice(0, 90)}`));
+        continue;
+      }
+      // Dedupe key ignores the leading "⏺" bullet (claude renders the same
+      // status line both standalone and bullet-prefixed) and any trailing
+      // elapsed-time suffix (in-progress commands re-render every second as
+      // "… (4s)" → "… (5s)" on whichever wrapped row the suffix lands).
+      const key = stripDurationTail(t.replace(/^⏺\s*/, ""));
       const emittedAt = this.recentlyEmitted.get(key);
       if (emittedAt !== undefined && Date.now() - emittedAt < DEDUPE_WINDOW_MS) {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(dupe) ${this.paneId}: ${t.slice(0, 90)}`));
@@ -266,6 +345,7 @@ export class PaneBridge {
 
     if (next === "busy" && prev !== "busy") {
       if (!this.turnStartMs) this.turnStartMs = Date.now();
+      this.recentlyEmitted.clear(); // new turn — allow repeats of past content
       emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
     }
 
@@ -337,11 +417,17 @@ export class PaneBridge {
   private async emitTurnResult(): Promise<void> {
     emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
     let text = "";
-    try {
-      const raw = await this.readPane();
-      text = extractResult(raw.split("\n"));
-    } catch {
-      // pane may be gone; result stays empty
+    if (this.lastProseBlock) {
+      // the transcript's final assistant text is the authoritative answer
+      text = this.lastProseBlock;
+      this.lastProseBlock = "";
+    } else {
+      try {
+        const raw = await this.readPane();
+        text = extractResult(raw.split("\n"));
+      } catch {
+        // pane may be gone; result stays empty
+      }
     }
     const durationMs = this.turnStartMs ? Date.now() - this.turnStartMs : 0;
     this.turnStartMs = 0;
@@ -363,6 +449,7 @@ export class PaneBridge {
 
   async prompt(text: string): Promise<void> {
     emit(this.paneId, { type: "user_prompt", text });
+    this.recentlyEmitted.clear(); // new turn — allow repeats of past content
     this.recentTyped = text.replace(/\s+/g, "");
     this.recentTypedAt = Date.now();
     await typeAndSubmit(this.paneId, text);
@@ -448,6 +535,7 @@ export class PaneBridge {
     this.disposed = true;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.tailTimer) clearInterval(this.tailTimer);
     this.sub?.close();
     console.log(`[bridge ${this.paneId}] disposed`);
   }
@@ -467,6 +555,12 @@ export async function refreshAgents(): Promise<AgentInfo[]> {
     if (existing) {
       existing.agent = info.agent;
       existing.cwd = info.cwd;
+      // the agent session may only become known after the first prompt —
+      // pick up the transcript tail as soon as the id appears
+      if (info.agent_session?.value && !existing.agentSessionId) {
+        existing.agentSessionId = info.agent_session.value;
+        existing.startTailIfNeeded();
+      }
     } else {
       const b = new PaneBridge(info);
       bridges.set(info.pane_id, b);

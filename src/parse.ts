@@ -37,15 +37,25 @@ export function filterVolatile(lines: string[]): string[] {
  * normalizing instead makes the finished variant identical to the running
  * one, so the multiset diff neither re-emits nor drops it.
  */
+// Trailing "(3s)" / "(1m 4s)" / width-cut "(3s" elapsed-time suffix.
+const DURATION_TAIL = /\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)?\s*$/;
+
+/** Strip the elapsed-time suffix from any line, for dedupe-key purposes:
+ *  in-progress commands re-render every second with a new duration, and the
+ *  suffix can land on any wrapped continuation row of the command box. */
+export function stripDurationTail(l: string): string {
+  return l.replace(DURATION_TAIL, "");
+}
+
 export function normalizeLine(l: string): string {
   // Width truncation can also cut the suffix itself, leaving "… (3s" with no
   // closing paren — and the seconds tick each redraw, so every variant would
   // re-emit. Accept an unclosed paren when the ellipsis directly precedes it.
   if (/…\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)?\s*$/.test(l)) {
-    return l.replace(/\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)?\s*$/, "");
+    return stripDurationTail(l);
   }
   if (/^\s*⎿/.test(l) && /\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/.test(l)) {
-    return l.replace(/\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/, "");
+    return stripDurationTail(l);
   }
   return l;
 }

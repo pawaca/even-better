@@ -21,9 +21,13 @@ pane.
 - **Discovery** — `agent.list` over herdr's unix socket
   (`~/.config/herdr/herdr.sock`); every agent pane becomes a "session"
   (session id = pane id, e.g. `w1:pQ`).
-- **Output** — polls `pane.read` (visible screen, 600ms), filters volatile TUI
-  lines (spinners, prompt boxes, status bars), diffs snapshots by scroll
-  alignment, and streams new lines as `text_delta` SSE events.
+- **Output (hybrid source)** — tool activity comes from polling `pane.read`
+  (visible screen, 300ms): volatile TUI lines filtered, snapshots multiset-
+  diffed, new lines streamed as `text_delta`. Assistant prose comes from
+  tailing the agent's session transcript
+  (`~/.claude/projects/*/<session>.jsonl`) — the terminal stops rendering
+  intermediate text in long tool-heavy turns, but the transcript never misses
+  a message; rendered screen copies of the same prose are suppressed.
 - **Status** — subscribes to `pane.agent_status_changed`
   (working→busy, blocked→awaiting, idle/done→idle + result).
 - **Blocked screens** — when an agent blocks, the visible screen is parsed for
