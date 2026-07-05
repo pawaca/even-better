@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs";
+import { appendFileSync } from "node:fs";
 
 // Every message exchanged with the app is appended here as one JSON line:
 // {"t":"<iso>","dir":"out"|"in","sessionId":"w1:pQ","msg":{...}}
@@ -13,7 +13,12 @@ export function logEvent(
   msg: unknown,
 ): void {
   const line = JSON.stringify({ t: new Date().toISOString(), dir, sessionId, msg });
-  appendFile(eventLogPath, line + "\n", () => {
+  try {
+    // Synchronous append preserves emission order in the log. Async appendFile
+    // can land out of order, which made tool_start/tool_end look reversed even
+    // though the wire order was correct. Event volume is low; the cost is fine.
+    appendFileSync(eventLogPath, line + "\n");
+  } catch {
     // best effort — never let logging break the bridge
-  });
+  }
 }

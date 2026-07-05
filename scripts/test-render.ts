@@ -33,3 +33,10 @@ t("box-strip",
 t("pipeline",
   renderForGlasses("| Metric | Value |\n|--------|-------|\n| Latency | 42ms |"),
   "• Latency\n  Value: 42ms");
+
+import { chunkForGlasses } from "../src/render.js";
+const tc=(name:string,got:unknown,want:unknown)=>console.log(`${JSON.stringify(got)===JSON.stringify(want)?"✅":"❌"} ${name}`);
+tc("short-single", chunkForGlasses("hi\nthere", 240), ["hi\nthere"]);
+tc("no-split-line", chunkForGlasses("aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc", 15), ["aaaaaaaaaa","bbbbbbbbbb","cccccccccc"]);
+tc("pack-lines", chunkForGlasses("a\nb\nc\nd", 3), ["a\nb","c\nd"]);
+tc("long-line-whole", chunkForGlasses("short\nthisisaverylonglinethatexceeds", 10), ["short","thisisaverylonglinethatexceeds"]);

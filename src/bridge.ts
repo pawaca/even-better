@@ -16,7 +16,7 @@ import { logEvent } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { ScreenTimeline } from "./screen-timeline.js";
-import { renderForGlasses } from "./render.js";
+import { chunkForGlasses, renderForGlasses } from "./render.js";
 import {
   classifyMenu,
   extractResult,
@@ -297,7 +297,12 @@ export class PaneBridge {
         const text = e.text.trim();
         if (!text) return;
         this.lastProseBlock = text; // keep the raw text for the turn result
-        emit(this.paneId, { type: "text_delta", text: renderForGlasses(text) + "\n" });
+        // Ship a long block as several smaller text_deltas so the glasses render
+        // it progressively rather than as one large blob that arrives at once.
+        const rendered = renderForGlasses(text);
+        for (const chunk of chunkForGlasses(rendered)) {
+          emit(this.paneId, { type: "text_delta", text: chunk + "\n" });
+        }
         return;
       }
       case "tool": {
@@ -318,8 +323,16 @@ export class PaneBridge {
         }
         // The app renders the tool from tool_start → tool_end (keyed by toolId),
         // updating one bubble in place. Do NOT also emit a text_delta for it —
-        // that would append the tool a second time as plain text.
-        emit(this.paneId, { type: "tool_start", name: e.name, toolId: e.id });
+        // that would append the tool a second time as plain text. Carry the
+        // summary on tool_start too: transcript-sourced tools often complete
+        // within one poll, so start+end arrive together — the command must be
+        // visible on the very first frame, not only on tool_end.
+        emit(this.paneId, {
+          type: "tool_start",
+          name: e.name,
+          toolId: e.id,
+          summary: summarizeTool(e.name, e.input),
+        });
         return;
       }
       case "toolResult": {
@@ -506,14 +519,15 @@ export class PaneBridge {
   }
 
   private async emitTurnResult(): Promise<void> {
-    emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
-    let text = "";
+    // Order matters. The herdr idle event can beat the transcript poll, so the
+    // final `say` block may still be in flight as a text_delta. Drain it FIRST,
+    // then emit result, then `status idle` LAST — if idle went out before the
+    // trailing text_delta, the app would treat that late text as new activity
+    // and get stuck showing "inferring" with no closing idle.
     if (this.onTranscript) {
-      // The herdr idle event can beat the transcript poll: the final text
-      // block may not have been read yet. Give the timeline a couple of ticks
-      // to drain before snapshotting the answer.
       await new Promise((r) => setTimeout(r, 1100));
     }
+    let text = "";
     if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
       text = this.lastProseBlock;
@@ -540,6 +554,7 @@ export class PaneBridge {
       inputTokens: this.turnInputTokens,
       outputTokens: this.turnOutputTokens,
     });
+    emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
   }
 
   // ── inbound from the app ─────────────────────────────
