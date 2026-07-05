@@ -14,8 +14,6 @@ const VOLATILE_PATTERNS: RegExp[] = [
   /ctrl\+[a-z] to /i,
   /^\s*\[[^\]]{2,30}\]\s+📦/, // "[Opus 4.6] 📦 repo [branch]" status bar
   /^\s*[✢✳✶✻✽∗·]\s/, // working/thinking spinner line "✻ Inferring…", "· Shimmying…"
-  /^\s*⏺?\s*(Running|Ran)\s+\d+\s+shell command/i, // transient "Running 2 shell commands…"
-  /…\s*\(\d+m?\s?\d*s?\)\s*$/, // command line re-rendered with elapsed-time suffix "… (3s)"
   /^\s*>\s/, // user prompt echo — the app already renders user_prompt itself
   /^\s*[⠀-⣿]/, // braille spinner frames
   /\(esc to/i, // wrapped fragment of "(esc to interrupt · …)"
@@ -29,6 +27,21 @@ const VOLATILE_PATTERNS: RegExp[] = [
 
 export function filterVolatile(lines: string[]): string[] {
   return lines.filter((l) => !VOLATILE_PATTERNS.some((re) => re.test(l)));
+}
+
+/**
+ * Strip the elapsed-time suffix Claude Code appends to command lines when
+ * they finish ("⎿ $ cmd… (3s)"). Filtering such lines loses the tool call's
+ * first line for fast commands (the only capture already carries the suffix);
+ * normalizing instead makes the finished variant identical to the running
+ * one, so the multiset diff neither re-emits nor drops it.
+ */
+export function normalizeLine(l: string): string {
+  const hasDuration = /\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/.test(l);
+  if (hasDuration && (l.includes("…") || /^\s*⎿/.test(l))) {
+    return l.replace(/\s*\((?:\d+m\s*)?\d+(?:\.\d+)?s\)\s*$/, "");
+  }
+  return l;
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   diffNewLines,
   extractResult,
   filterVolatile,
+  normalizeLine,
   parseMenu,
   type ClassifiedMenu,
   type ParsedMenu,
@@ -39,6 +40,10 @@ const FLUSH_INTERVAL_MS = 400;
 // matching line changes), so it cannot serve as an output firehose. We poll
 // the pane instead; a unix-socket read of ≤120 lines every 600ms is cheap.
 const POLL_INTERVAL_MS = 600;
+// A line emitted within this window is not emitted again. Catches "flapping"
+// TUI lines (e.g. "Running 1 shell command…") that toggle present/absent
+// across polls, which position-independent multiset diffing re-detects as new.
+const DEDUPE_WINDOW_MS = 30_000;
 
 export type AppState = "idle" | "busy" | "awaiting";
 
@@ -70,7 +75,7 @@ export class PaneBridge {
   private polling = false;
   private lastLines: string[] = [];
   private lastFlushed = "";
-  private lastEmittedLine = "";
+  private recentlyEmitted = new Map<string, number>();
   private recentTyped = "";
   private recentTypedAt = 0;
   private pendingOut: string[] = [];
@@ -176,7 +181,7 @@ export class PaneBridge {
   // ── output streaming ─────────────────────────────────
 
   private onOutput(text: string): void {
-    const lines = filterVolatile(text.split("\n"));
+    const lines = filterVolatile(text.split("\n")).map(normalizeLine);
     if (this.lastLines.length === 0) {
       // No baseline (e.g. pane was blank at startup): everything is new.
       this.lastLines = lines;
@@ -220,12 +225,20 @@ export class PaneBridge {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(echo) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      if (t === this.lastEmittedLine) {
+      const emittedAt = this.recentlyEmitted.get(t);
+      if (emittedAt !== undefined && Date.now() - emittedAt < DEDUPE_WINDOW_MS) {
         if (STREAM_LOG) console.log(paint("33", `✂ drop(dupe) ${this.paneId}: ${t.slice(0, 90)}`));
         continue;
       }
-      this.lastEmittedLine = t;
+      this.recentlyEmitted.set(t, Date.now());
       out.push(line);
+    }
+    // prune expired dedupe entries so the map stays bounded
+    if (this.recentlyEmitted.size > 500) {
+      const cutoff = Date.now() - DEDUPE_WINDOW_MS;
+      for (const [k, ts] of this.recentlyEmitted) {
+        if (ts < cutoff) this.recentlyEmitted.delete(k);
+      }
     }
     this.pendingOut = [];
     if (out.length === 0) return;
