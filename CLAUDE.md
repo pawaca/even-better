@@ -60,10 +60,11 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   be edited. This is *why* we buffer whole prose blocks from the jsonl and
   `renderForGlasses` them before sending — we can fix a table only because we hold
   the complete block first.
-- **Tools are shown with `tool_start` only (no `tool_end`).** `tool_start` gives
-  the distinct tool color and carries the command as `summary`; `tool_end` is
-  dropped because the app labels it "tool end:" (noise). Still track
-  `pendingTools` for permission descriptions.
+- **Tools use the `tool_start`→`tool_end` bubble (keyed by `toolId`).** The app
+  labels and colors tool events; work with that. `tool_start` carries `name`,
+  `summary` (readable command), and `detail.input` (full params); `tool_end`
+  adds `detail.output`. Both go through `streamEvent()` to stay in order.
+  `pendingTools` correlates the pair and describes the tool for permissions.
 - **Output is streamed, not chunked.** Text types out a few code points per
   `STREAM_TICK_MS` (`streamText()`, adaptive rate so long answers stay bounded)
   so it reveals smoothly with no artificial line breaks; `tool_start` events
@@ -79,7 +80,7 @@ The app renders each event type differently. Emit the right one:
 | Semantic | Events | App behavior |
 |----------|--------|--------------|
 | Append (immutable) | `text_delta` `user_prompt` `result` `notification` | added to the transcript |
-| Keyed update | `tool_start`→`tool_end` (shared `toolId`) | one bubble, running→done — we avoid it (see tools invariant) |
+| Keyed update | `tool_start`→`tool_end` (shared `toolId`) | one bubble, running→done — this is how we render tools |
 | Single-slot widget | `status` `running_stats` `task_progress` | overwrites one UI element |
 | Interactive | `permission_request` `user_question` ⇄ responses | menu + reply |
 

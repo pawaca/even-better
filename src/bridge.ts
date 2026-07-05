@@ -384,10 +384,11 @@ export class PaneBridge {
           if (progress) emit(this.paneId, { type: "task_progress", ...progress });
           return; // no start/end correlation for todos
         }
-        // Track the pending tool so a permission request can describe it. Show
-        // it with a tool_start event (the app styles tool events in a distinct
-        // color) carrying the command as its summary; we drop tool_end to avoid
-        // the app's "tool end:" label. Paced so it keeps order with say chunks.
+        // The app renders a tool as a start→end bubble keyed by toolId, and it
+        // styles both with its own prefix — so we work with that rather than
+        // against it. tool_start carries the name, a readable summary, and the
+        // full input params; tool_end adds the output. Streamed so it stays in
+        // order with the surrounding text.
         this.pendingTools.set(e.id, { name: e.name, input: e.input });
         if (this.pendingTools.size > 100) {
           const first = this.pendingTools.keys().next().value;
@@ -398,13 +399,21 @@ export class PaneBridge {
           name: e.name,
           toolId: e.id,
           summary: summarizeTool(e.name, e.input),
+          detail: { input: e.input },
         });
         return;
       }
       case "toolResult": {
-        // Result isn't shown as its own line (the command line already covered
-        // the tool); just release the pending entry.
+        const pending = this.pendingTools.get(e.id);
+        if (!pending) return;
         this.pendingTools.delete(e.id);
+        this.streamEvent({
+          type: "tool_end",
+          name: pending.name,
+          toolId: e.id,
+          summary: summarizeTool(pending.name, pending.input),
+          detail: { input: pending.input, output: e.output.slice(0, 1500) },
+        });
         return;
       }
     }
