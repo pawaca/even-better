@@ -55,8 +55,7 @@ Environment variables:
 | --- | --- | --- |
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
-| `BIND` | `all` | Interface to listen on: `all` (0.0.0.0), `tailscale`, `lan`, or a literal IP |
-| `EXPOSE` | – | Public tunnel: `funnel` (Tailscale), `pinggy`, `bore`, `ngrok`, or `cloudflared` |
+| `ACCESS` | `lan` | How the phone reaches the bridge — sets both the bind and the single QR: `lan` (same Wi-Fi), `local` (same machine), `tailscale`, `funnel`, `pinggy`, `bore`, `ngrok`, `cloudflared`, or a literal IP |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
@@ -65,29 +64,27 @@ Environment variables:
 The phone must reach your machine over the network (same LAN, Tailscale, etc.).
 
 **Security note.** The API can drive Claude Code (i.e. run code on your machine),
-guarded only by the bearer token, over plain HTTP. On a trusted home LAN the
-default `BIND=all` is fine. On an untrusted network (office, public Wi-Fi) use
-`BIND=tailscale`: the port stays invisible to the LAN and is reachable only over
-the private, WireGuard-encrypted tailnet — so the token never travels in the
-clear and nothing can port-scan you into an agent session.
+guarded only by the bearer token. On a trusted home LAN the default `ACCESS=lan`
+is fine. On an untrusted network (office, public Wi-Fi) use `ACCESS=tailscale`:
+the port stays invisible to the LAN and is reachable only over the private,
+WireGuard-encrypted tailnet, so the token never travels in the clear and nothing
+can port-scan you into an agent session.
 
 The bearer token is persisted at `~/.config/even-better/token` (mode 0600) so you
 scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 
 ## Remote access (off your Wi-Fi)
 
-- **Tailscale (recommended)** — private, WireGuard-encrypted, stable IP, no time
-  limit. Nothing exposed publicly. Run with `BIND=tailscale` and scan the
-  `Tailscale:` QR. Best for regular use.
-- **`EXPOSE=funnel` (Tailscale Funnel)** — public HTTPS at your stable
+- **`ACCESS=tailscale` (recommended)** — private, WireGuard-encrypted, stable IP,
+  no time limit. Nothing exposed publicly. Scan the one QR. Best for regular use.
+- **`ACCESS=funnel` (Tailscale Funnel)** — public HTTPS at your stable
   `*.ts.net` name; the **phone needs no client**, SSE works (verified), and it
   tears the tunnel down when the bridge exits. Requires Funnel enabled in the
-  Tailscale admin console once, and the bridge on localhost (`BIND=all` default).
-  Best no-install remote option.
-- **`EXPOSE=pinggy`** — quick public tunnel over the built-in `ssh`, zero install,
+  Tailscale admin console once. Best no-install remote option.
+- **`ACCESS=pinggy`** — quick public tunnel over the built-in `ssh`, zero install,
   supports SSE. Free tunnels rotate every 60 min. Good for a one-off share.
   `bore`/`ngrok` also work (`bore` is plain HTTP; `ngrok` needs an authtoken).
-- **Cloudflare** — its *quick* tunnel (`EXPOSE=cloudflared`, trycloudflare.com)
+- **Cloudflare** — its *quick* tunnel (`ACCESS=cloudflared`, trycloudflare.com)
   **does not support SSE**, so live output will not stream. To use Cloudflare,
   set up a **named tunnel** pointed at `localhost:<PORT>` (SSE works, and you can
   put Cloudflare Access auth in front of a stable hostname); then connect via

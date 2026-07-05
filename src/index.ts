@@ -17,7 +17,7 @@ import { emit, getMessages, sseHandler } from "./sse.js";
 import { paneRead } from "./herdr.js";
 import { logEvent, eventLogPath } from "./log.js";
 import { extractModel } from "./parse.js";
-import { startExpose } from "./expose.js";
+import { startExpose, exposeProviderNames } from "./expose.js";
 
 const VERSION = "0.1.0";
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
@@ -290,56 +290,60 @@ const urlFor = (host: string): string => `http://${host}:${PORT}?${authQuery}`;
 // A tunnel gives a full public base (scheme+host); just append the auth query.
 const appUrlFromBase = (base: string): string => `${base}?${authQuery}`;
 
-// Which interface to listen on. Default 0.0.0.0 (all — convenient on a trusted
-// home LAN). On an untrusted network (office, public Wi-Fi) prefer BIND=tailscale
-// so the port is invisible to the LAN and only reachable over the private,
-// WireGuard-encrypted tailnet. BIND=lan or a literal IP also work.
-function resolveBind(): { host: string; label: string } {
-  const b = (process.env.BIND ?? "all").toLowerCase();
-  if (b === "all" || b === "0.0.0.0") return { host: "0.0.0.0", label: "all interfaces" };
-  if (b === "tailscale") {
-    const ts = tailscaleAddress();
-    if (!ts) {
-      console.error("BIND=tailscale but no Tailscale (100.64/10) address found — is Tailscale up?");
-      process.exit(1);
-    }
-    return { host: ts, label: "Tailscale only" };
-  }
-  if (b === "lan") {
-    const lan = lanAddress();
-    if (!lan) {
-      console.error("BIND=lan but no LAN address found");
-      process.exit(1);
-    }
-    return { host: lan, label: "LAN only" };
-  }
-  return { host: process.env.BIND as string, label: `${process.env.BIND} only` };
+// ── access: one knob, one QR ───────────────────────────
+// ACCESS answers a single question — "how does the phone reach the bridge?" —
+// and drives BOTH the listen bind and the one QR we print, so there is nothing
+// to choose between at scan time. Modes:
+//   lan       (default) bind all interfaces, QR = LAN IP     — same Wi-Fi
+//   local               bind loopback,       QR = localhost  — same machine
+//   tailscale           bind tailnet IP,     QR = tailnet IP — private, off-Wi-Fi
+//   funnel|pinggy|…      bind loopback + run a public tunnel, QR = its URL
+//   <literal ip>        bind that IP,        QR = that IP
+interface Access {
+  label: string;
+  bindHost: string;
+  qrHost?: string; // non-tunnel modes: host to encode in the QR (undefined ⇒ offline fallback)
+  tunnel?: string; // tunnel modes: provider to spawn (the QR comes from the tunnel URL)
 }
 
-const bind = resolveBind();
+function resolveAccess(): Access {
+  const a = (process.env.ACCESS || "lan").toLowerCase();
+  if (a === "lan") return { label: "LAN (same Wi-Fi)", bindHost: "0.0.0.0", qrHost: lanAddress() };
+  if (a === "local" || a === "localhost")
+    return { label: "local only (same machine)", bindHost: "127.0.0.1", qrHost: "localhost" };
+  if (a === "tailscale") {
+    const ts = tailscaleAddress();
+    if (!ts) {
+      console.error("ACCESS=tailscale but no Tailscale (100.64/10) address found — is Tailscale up?");
+      process.exit(1);
+    }
+    return { label: "Tailscale (private tailnet)", bindHost: ts, qrHost: ts };
+  }
+  if (exposeProviderNames().includes(a)) {
+    const label = a === "funnel" ? "Tailscale Funnel (public HTTPS)" : `${a} (public tunnel)`;
+    // Loopback-only local bind: the tunnel reaches us over 127.0.0.1, so the
+    // port is never exposed on the LAN — only the intended public URL is.
+    return { label, bindHost: "127.0.0.1", tunnel: a };
+  }
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(a)) return { label: `${a} only`, bindHost: a, qrHost: a };
+  console.error(
+    `error: unknown ACCESS "${a}". Use: lan, local, tailscale, ${exposeProviderNames().join(", ")}, or a literal IP.`,
+  );
+  return process.exit(1);
+}
 
-const server = app.listen(PORT, bind.host, async () => {
-  const lan = lanAddress();
-  const ts = tailscaleAddress();
-  // Addresses that are actually reachable given the bind. `qr` marks the ones
-  // a phone can connect to (localhost can't be, so it's info-only). When bound
-  // to a specific interface, only that one is reachable — localhost included is
-  // NOT bound, so it isn't listed.
-  const reachable: { label: string; host: string; qr: boolean }[] =
-    bind.host === "0.0.0.0"
-      ? [
-          { label: "Local", host: "localhost", qr: false },
-          ...(lan ? [{ label: "LAN", host: lan, qr: true }] : []),
-          ...(ts ? [{ label: "Tailscale", host: ts, qr: true }] : []),
-        ]
-      : [{ label: bind.label, host: bind.host, qr: true }];
+// BIND/EXPOSE were merged into ACCESS; warn rather than silently ignore them.
+if (!process.env.ACCESS && (process.env.BIND || process.env.EXPOSE)) {
+  console.error("note: BIND/EXPOSE were merged into a single ACCESS (e.g. ACCESS=funnel). Ignoring the old vars.");
+}
 
+const access = resolveAccess();
+
+const server = app.listen(PORT, access.bindHost, async () => {
   console.log("");
   console.log(`  even-better v${VERSION}`);
-  console.log(`  Bind  : ${bind.host} (${bind.label})`);
-  for (const { label, host } of reachable) {
-    console.log(`  ${label.padEnd(5)} : http://${host}:${PORT}`);
-  }
+  console.log(`  Access: ${access.label}`);
+  if (access.tunnel) console.log(`  Local : http://127.0.0.1:${PORT}  (public URL below)`);
   console.log(`  Token : ${TOKEN}`);
   console.log(`  Log   : ${eventLogPath}`);
   console.log("");
@@ -354,20 +358,17 @@ const server = app.listen(PORT, bind.host, async () => {
   } catch (err) {
     console.error(`  herdr : NOT REACHABLE — ${(err as Error).message}`);
   }
-  // QR only for addresses a phone can reach; if none (offline, bound to all),
-  // fall back to localhost so there is at least something for same-machine use.
-  const qrTargets = reachable.filter((r) => r.qr);
-  for (const { label, host } of qrTargets.length ? qrTargets : [{ label: "Local", host: "localhost" }]) {
-    const url = urlFor(host);
-    console.log("");
-    console.log(`  ${label}: ${url}`);
-    if (process.env.NO_QR !== "1") {
-      qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
-    }
+
+  if (access.tunnel) {
+    // The tunnel prints the one QR itself, once its public URL is up.
+    startExpose(access.tunnel, PORT, appUrlFromBase);
+    return;
   }
-  // Optional public tunnel (EXPOSE=pinggy|bore|ngrok|cloudflared). Prints its
-  // own URL + QR once the tunnel is up.
-  startExpose(PORT, appUrlFromBase);
+  const host = access.qrHost ?? "localhost";
+  if (!access.qrHost) console.log("  (no LAN address found — showing localhost, which a phone can't reach)");
+  console.log("");
+  console.log(`  Scan to connect · ${urlFor(host)}`);
+  if (process.env.NO_QR !== "1") qrcodeTerminal.generate(urlFor(host), { small: true }, (code) => console.log(code));
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import qrcodeTerminal from "qrcode-terminal";
 
-// Optional public tunnel, selected via EXPOSE=<provider>. Mirrors
-// even-terminal's design: each provider is a tiny spec — spawn its CLI pointed
-// at localhost:port, scrape the public URL out of its output, then print the
-// token-appended URL + QR. We do NOT implement any tunnel protocol ourselves.
+// Public tunnel, selected via ACCESS=<provider>. Mirrors even-terminal's
+// design: each provider is a tiny spec — spawn its CLI pointed at localhost:port,
+// scrape the public URL out of its output, then print the token-appended URL +
+// QR. We do NOT implement any tunnel protocol ourselves.
 
 interface Provider {
   name: string;
@@ -73,11 +73,10 @@ const providers: Record<string, Provider> = {
     parseUrl: (o) => o.match(/https:\/\/[^\s/]+\.ts\.net/)?.[0]?.replace(/\/+$/, ""),
     note:
       "Tailscale Funnel: public HTTPS via your stable *.ts.net name (encrypted). " +
-      "Needs Funnel enabled in the admin console, and the bridge listening on " +
-      "localhost (default BIND=all is fine, BIND=tailscale is not).",
+      "Needs Funnel enabled once in the Tailscale admin console.",
     // The funnel config lives in tailscaled and can outlive an abruptly-killed
     // child, leaving the port publicly exposed. Force it down on exit. (This
-    // resets any serve config — expected, since EXPOSE=funnel owns it.)
+    // resets any serve config — expected, since ACCESS=funnel owns it.)
     cleanup: () => {
       try {
         spawnSync("tailscale", ["funnel", "reset"], { stdio: "ignore" });
@@ -93,16 +92,14 @@ export function exposeProviderNames(): string[] {
 }
 
 /**
- * Start the tunnel named by EXPOSE (if any). `buildAppUrl` turns the tunnel's
+ * Start the named tunnel and print its one QR. `buildAppUrl` turns the tunnel's
  * public base (e.g. https://x.pinggy.link) into the full app URL with the token.
  */
-export function startExpose(port: number, buildAppUrl: (publicBase: string) => string): void {
-  const name = process.env.EXPOSE;
-  if (!name) return;
-  const provider = providers[name.toLowerCase()];
+export function startExpose(providerName: string, port: number, buildAppUrl: (publicBase: string) => string): void {
+  const provider = providers[providerName.toLowerCase()];
   if (!provider) {
-    console.error(`error: unknown EXPOSE provider "${name}". Supported: ${exposeProviderNames().join(", ")}`);
-    process.exit(1);
+    console.error(`error: unknown tunnel provider "${providerName}". Supported: ${exposeProviderNames().join(", ")}`);
+    return;
   }
   const program = process.env[`${provider.name.toUpperCase()}_PROGRAM_PATH`] || provider.program;
 
@@ -119,8 +116,8 @@ export function startExpose(port: number, buildAppUrl: (publicBase: string) => s
     if (!base) return;
     found = true;
     const url = buildAppUrl(base);
-    console.log(`\n  Public (${provider.name}): ${base}\n`);
-    console.log(`  ${url}`);
+    console.log(`\n  Public (${provider.name}): ${base}`);
+    console.log(`  Scan to connect · ${url}`);
     if (process.env.NO_QR !== "1") qrcodeTerminal.generate(url, { small: true }, (c) => console.log(c));
   };
   child.stdout.on("data", onData);
