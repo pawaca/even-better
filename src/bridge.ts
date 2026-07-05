@@ -316,36 +316,23 @@ export class PaneBridge {
           if (progress) emit(this.paneId, { type: "task_progress", ...progress });
           return; // no start/end correlation for todos
         }
+        // Track the pending tool so a permission request can describe it, then
+        // show it as one clean text line. We deliberately do NOT use the
+        // tool_start/tool_end bubble events: the app labels those with a
+        // "tool end:" prefix that is noise on the tiny panel. A single
+        // "⏺ <command>" line reads better and can't double-render.
         this.pendingTools.set(e.id, { name: e.name, input: e.input });
         if (this.pendingTools.size > 100) {
           const first = this.pendingTools.keys().next().value;
           if (first) this.pendingTools.delete(first);
         }
-        // The app renders the tool from tool_start → tool_end (keyed by toolId),
-        // updating one bubble in place. Do NOT also emit a text_delta for it —
-        // that would append the tool a second time as plain text. Carry the
-        // summary on tool_start too: transcript-sourced tools often complete
-        // within one poll, so start+end arrive together — the command must be
-        // visible on the very first frame, not only on tool_end.
-        emit(this.paneId, {
-          type: "tool_start",
-          name: e.name,
-          toolId: e.id,
-          summary: summarizeTool(e.name, e.input),
-        });
+        emit(this.paneId, { type: "text_delta", text: `⏺ ${summarizeTool(e.name, e.input)}\n` });
         return;
       }
       case "toolResult": {
-        const pending = this.pendingTools.get(e.id);
-        if (!pending) return;
+        // Result isn't shown as its own line (the command line already covered
+        // the tool); just release the pending entry.
         this.pendingTools.delete(e.id);
-        emit(this.paneId, {
-          type: "tool_end",
-          name: pending.name,
-          toolId: e.id,
-          summary: summarizeTool(pending.name, pending.input),
-          detail: { input: pending.input, output: e.output.slice(0, 1500) },
-        });
         return;
       }
     }

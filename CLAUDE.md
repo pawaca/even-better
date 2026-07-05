@@ -60,8 +60,10 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   be edited. This is *why* we buffer whole prose blocks from the jsonl and
   `renderForGlasses` them before sending — we can fix a table only because we hold
   the complete block first.
-- **Don't double-emit a tool.** A tool is one `tool_start`→`tool_end` bubble
-  (keyed by `toolId`); do NOT also emit its summary as a `text_delta`.
+- **Tools render as a plain `⏺ <command>` text line, not `tool_start`/`tool_end`
+  bubbles.** The app labels those bubble events with a "tool end:" prefix that is
+  noise on the tiny panel. Emit one `text_delta` per tool call instead; still
+  track `pendingTools` so a permission request can describe the pending tool.
 - **Interaction timeouts do not auto-deny.** A blocked pane stays `awaiting`
   until the user answers or the menu clears — no SDK forces a decision on us.
 
@@ -72,7 +74,7 @@ The app renders each event type differently. Emit the right one:
 | Semantic | Events | App behavior |
 |----------|--------|--------------|
 | Append (immutable) | `text_delta` `user_prompt` `result` `notification` | added to the transcript |
-| Keyed update | `tool_start`→`tool_end` (shared `toolId`) | one bubble, running→done |
+| Keyed update | `tool_start`→`tool_end` (shared `toolId`) | one bubble, running→done — we avoid it (see tools invariant) |
 | Single-slot widget | `status` `running_stats` `task_progress` | overwrites one UI element |
 | Interactive | `permission_request` `user_question` ⇄ responses | menu + reply |
 
