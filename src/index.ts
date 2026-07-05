@@ -235,24 +235,40 @@ api.get("/sessions/:id/history", (_req, res) => {
 
 // ── startup ────────────────────────────────────────────
 
-function lanAddress(): string | undefined {
+// An IPv4 in 100.64.0.0/10 is Tailscale's CGNAT range — reachable from any
+// device on the same tailnet, so the app can connect over it off-Wi-Fi.
+function isTailscale(ip: string): boolean {
+  const [a, b] = ip.split(".").map(Number);
+  return a === 100 && b >= 64 && b <= 127;
+}
+
+function ipv4s(): string[] {
+  const out: string[] = [];
   for (const ifaces of Object.values(networkInterfaces())) {
     for (const iface of ifaces ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) return iface.address;
+      if (iface.family === "IPv4" && !iface.internal) out.push(iface.address);
     }
   }
-  return undefined;
+  return out;
+}
+
+const lanAddress = (): string | undefined => ipv4s().find((ip) => !isTailscale(ip));
+const tailscaleAddress = (): string | undefined => ipv4s().find(isTailscale);
+
+function urlFor(host: string): string {
+  return `http://${host}:${PORT}?token=${TOKEN}&defaultProvider=claude`;
 }
 
 const server = app.listen(PORT, "0.0.0.0", async () => {
-  const host = lanAddress() ?? "localhost";
-  const url = `http://${host}:${PORT}?token=${TOKEN}&defaultProvider=claude`;
+  const lan = lanAddress();
+  const ts = tailscaleAddress();
   console.log("");
   console.log(`  even-better v${VERSION}`);
-  console.log(`  Local : http://localhost:${PORT}`);
-  console.log(`  LAN   : http://${host}:${PORT}`);
-  console.log(`  Token : ${TOKEN}`);
-  console.log(`  Log   : ${eventLogPath}`);
+  console.log(`  Local     : http://localhost:${PORT}`);
+  if (lan) console.log(`  LAN       : http://${lan}:${PORT}`);
+  if (ts) console.log(`  Tailscale : http://${ts}:${PORT}`);
+  console.log(`  Token     : ${TOKEN}`);
+  console.log(`  Log       : ${eventLogPath}`);
   console.log("");
   try {
     const agents = await refreshAgents();
@@ -265,10 +281,19 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   } catch (err) {
     console.error(`  herdr : NOT REACHABLE — ${(err as Error).message}`);
   }
-  console.log("");
-  console.log(`  ${url}`);
-  if (process.env.NO_QR !== "1") {
-    qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+  // One QR per reachable address, labeled, so you scan the right one for your
+  // situation: LAN on the same Wi-Fi, Tailscale from anywhere on the tailnet.
+  const targets = [
+    lan ? { label: "LAN", host: lan } : null,
+    ts ? { label: "Tailscale", host: ts } : null,
+  ].filter((x): x is { label: string; host: string } => x !== null);
+  for (const { label, host } of targets.length ? targets : [{ label: "Local", host: "localhost" }]) {
+    const url = urlFor(host);
+    console.log("");
+    console.log(`  ${label}: ${url}`);
+    if (process.env.NO_QR !== "1") {
+      qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+    }
   }
 });
 
