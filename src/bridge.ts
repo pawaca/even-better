@@ -32,11 +32,6 @@ function paint(code: string, s: string): string {
 }
 
 const OUTPUT_WINDOW_LINES = 120;
-// A live claude/codex selection menu renders a cursor (❯/›) on the highlighted
-// numbered option; a plain numbered list in prior transcript output never does.
-// The startup block probe requires this so it can't fake a prompt from
-// scrollback (parseMenu alone matches "1."/"2." lines anywhere).
-const LIVE_MENU_CURSOR = /^[ \t]*[❯›][ \t]*\d[.)]/m;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
@@ -166,8 +161,8 @@ export class PaneBridge {
       (err) => this.onSubClosed(err),
     );
     // A pane can already be blocked when the bridge discovers it (e.g. trust
-    // dialog on startup) — no transition event will fire, so surface it now.
-    void this.probeInitialBlock();
+    // dialog on startup) — no transition event will fire, so emit the menu now.
+    if (this.state === "awaiting") void this.emitBlockedMenu();
     this.selectTimeline();
     this.startPolling();
     if (!this.onTranscript) this.startSessionProbe();
@@ -432,6 +427,16 @@ export class PaneBridge {
     }
 
     if (next === "awaiting") {
+      // Authoritative backends (herdr, with a classifier) mean a real menu is
+      // open: drive the permission/question flow. A backend without one (cmux)
+      // only reaches here via the agent's Notification hook, which is ambiguous
+      // (permission vs. a non-blocking idle reminder) and carries no menu we can
+      // reliably drive — so surface it as a plain notification and leave the
+      // turn state alone. Never fabricate a permission prompt from it.
+      if (!getMux().explain) {
+        this.notifyAttention();
+        return;
+      }
       this.cancelIdle();
       if (this.state !== "awaiting") {
         this.state = "awaiting";
@@ -478,28 +483,16 @@ export class PaneBridge {
     }
   }
 
-  /** Surface an already-open menu at connect time. When the backend reported the
-   *  status authoritatively (herdr), trust `awaiting`. Backends that only learn
-   *  status from live events (cmux) start every pane as `idle`, so a menu open
-   *  *before* the bridge attached would be missed — detect one directly from the
-   *  screen and promote to awaiting. parseMenu returning null (the common idle
-   *  case) means no spurious prompt, so this is safe for every backend. */
-  private async probeInitialBlock(): Promise<void> {
-    if (this.state === "awaiting") {
-      void this.emitBlockedMenu();
-      return;
-    }
-    let screen = "";
-    try {
-      screen = await getMux().read(this.paneId, 45);
-    } catch {
-      return;
-    }
-    if (this.disposed) return;
-    if (LIVE_MENU_CURSOR.test(screen) && parseMenu(screen)) {
-      this.state = "awaiting";
-      void this.emitBlockedMenu();
-    }
+  /** Surface a cmux Notification-hook event as a plain, informational
+   *  notification — not a status change, not a permission prompt. cmux cannot
+   *  tell "needs permission" from "idle reminder" (the hook carries no message),
+   *  so this stays deliberately vague and leaves the turn state untouched. */
+  private notifyAttention(): void {
+    emit(this.paneId, {
+      type: "notification",
+      title: "Agent notification",
+      message: "The agent posted a notification — check the terminal if it's waiting on you.",
+    });
   }
 
   private async emitBlockedMenu(): Promise<void> {
