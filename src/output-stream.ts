@@ -46,6 +46,25 @@ export class OutputStream {
     }
   }
 
+  /** Immediately emit everything still queued, preserving item order. Used at
+   *  turn close-out so result/idle do not wait behind paced typing. */
+  flush(): void {
+    if (this.pacer) {
+      clearTimeout(this.pacer);
+      this.pacer = null;
+    }
+    const items = this.queue;
+    this.queue = [];
+    for (const item of items) {
+      if ("event" in item) {
+        this.emit(item.event);
+        continue;
+      }
+      const rest = item.chars.slice(item.pos).join("");
+      if (rest) this.emit({ type: "text_delta", text: rest });
+    }
+  }
+
   private pendingChars(): number {
     let n = 0;
     for (const it of this.queue) if ("chars" in it) n += it.chars.length - it.pos;

@@ -105,7 +105,7 @@ api.get("/events", (req, res) => {
     if (bridge) {
       emit(sessionId, {
         type: "status",
-        state: bridge.state === "idle" ? "idle" : "busy",
+        state: bridge.state,
         sessionId,
       });
     }

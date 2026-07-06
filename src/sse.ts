@@ -27,12 +27,16 @@ function bufFor(sessionId: string): SessionBuf {
 
 export function emit(sessionId: string, msg: object): void {
   if (!sessionId) return;
+  const type = (msg as { type?: string }).type;
   const s = bufFor(sessionId);
   const id = s.nextId++;
   s.messages.push({ id, msg });
   if (s.messages.length > MAX_MESSAGES_PER_SESSION) s.messages.shift();
-  logEvent("out", sessionId, msg);
-  const type = (msg as { type?: string }).type;
+  // EVENT_LOG keeps full fidelity by default; set EVENT_LOG_TEXT=0 to suppress
+  // high-volume text_delta rows while preserving the app's SSE stream.
+  if (type !== "text_delta" || process.env.EVENT_LOG_TEXT !== "0") {
+    logEvent("out", sessionId, msg);
+  }
   if (process.env.DEBUG_STREAM !== "0" && type !== "text_delta") {
     // text_delta is traced line-by-line in bridge.ts; summarize the rest here
     const detail = JSON.stringify(msg);
