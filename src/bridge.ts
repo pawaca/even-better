@@ -427,16 +427,6 @@ export class PaneBridge {
     }
 
     if (next === "awaiting") {
-      // Authoritative backends (herdr, with a classifier) mean a real menu is
-      // open: drive the permission/question flow. A backend without one (cmux)
-      // only reaches here via the agent's Notification hook, which is ambiguous
-      // (permission vs. a non-blocking idle reminder) and carries no menu we can
-      // reliably drive — so surface it as a plain notification and leave the
-      // turn state alone. Never fabricate a permission prompt from it.
-      if (!getMux().explain) {
-        this.notifyAttention();
-        return;
-      }
       this.cancelIdle();
       if (this.state !== "awaiting") {
         this.state = "awaiting";
@@ -481,18 +471,6 @@ export class PaneBridge {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
-  }
-
-  /** Surface a cmux Notification-hook event as a plain, informational
-   *  notification — not a status change, not a permission prompt. cmux cannot
-   *  tell "needs permission" from "idle reminder" (the hook carries no message),
-   *  so this stays deliberately vague and leaves the turn state untouched. */
-  private notifyAttention(): void {
-    emit(this.paneId, {
-      type: "notification",
-      title: "Agent notification",
-      message: "The agent posted a notification — check the terminal if it's waiting on you.",
-    });
   }
 
   private async emitBlockedMenu(): Promise<void> {

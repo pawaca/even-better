@@ -296,7 +296,12 @@ export class CmuxMultiplexer implements Multiplexer {
       case "agent.hook.Stop":
         this.routeAgent(payload, "idle");
         return;
-      case "agent.hook.Notification":
+      // Authoritative interactive blockers — a menu is genuinely open and can be
+      // answered from the glasses. (Notification is deliberately NOT here: it
+      // also fires for non-blocking idle reminders and carries no message, so it
+      // would fabricate fake prompts.)
+      case "agent.hook.PermissionRequest":
+      case "agent.hook.AskUserQuestion":
         this.routeAgent(payload, "awaiting");
         return;
       default:
