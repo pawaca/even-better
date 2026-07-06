@@ -115,6 +115,7 @@ interface HookSessionEntry {
 }
 interface HookSessionsFile {
   activeSessionsBySurface?: Record<string, { sessionId?: string }>;
+  activeSessionsByWorkspace?: Record<string, { sessionId?: string }>;
   sessions?: Record<string, HookSessionEntry>;
 }
 
@@ -200,6 +201,15 @@ export class CmuxMultiplexer implements Multiplexer {
           add(entry.surfaceId, bareSession(entry.sessionId ?? sid), entry);
         }
       }
+      // Some restored/hook-captured sessions appear only in the workspace index.
+      // An active-index entry is live, so no pid check — resolve its surface from
+      // the sessions map. (Ones with no surfaceId anywhere can't be placed here
+      // without cmux topology; event-time routing still reaches them by session.)
+      for (const ref of Object.values(data.activeSessionsByWorkspace ?? {})) {
+        const sid = ref?.sessionId;
+        const entry = sid ? sessions[sid] : undefined;
+        if (sid && entry?.surfaceId) add(entry.surfaceId, bareSession(sid), entry);
+      }
     }
     this.surfaceMeta = surfaceMeta;
     this.sessionToSurface = sessionToSurface;
@@ -213,9 +223,11 @@ export class CmuxMultiplexer implements Multiplexer {
   private async resolveFocused(): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(await cmux(["--id-format", "both", "identify", "--json"]));
-      if (isRecord(parsed) && isRecord(parsed.focused) && typeof parsed.focused.surface_id === "string") {
-        this.focusedSurface = parsed.focused.surface_id;
-      }
+      if (!isRecord(parsed)) return;
+      // Prefer the focused surface; fall back to the caller context, which other
+      // cmux builds report instead of a `focused` object.
+      const ctx = isRecord(parsed.focused) ? parsed.focused : isRecord(parsed.caller) ? parsed.caller : undefined;
+      if (ctx && typeof ctx.surface_id === "string") this.focusedSurface = ctx.surface_id;
     } catch {
       // leave focus as last known (from events); listPanes still returns panes
     }
