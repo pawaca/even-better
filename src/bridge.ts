@@ -161,8 +161,8 @@ export class PaneBridge {
       (err) => this.onSubClosed(err),
     );
     // A pane can already be blocked when the bridge discovers it (e.g. trust
-    // dialog on startup) — no transition event will fire, so emit the menu now.
-    if (this.state === "awaiting") void this.emitBlockedMenu();
+    // dialog on startup) — no transition event will fire, so surface it now.
+    void this.probeInitialBlock();
     this.selectTimeline();
     this.startPolling();
     if (!this.onTranscript) this.startSessionProbe();
@@ -470,6 +470,30 @@ export class PaneBridge {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
+    }
+  }
+
+  /** Surface an already-open menu at connect time. When the backend reported the
+   *  status authoritatively (herdr), trust `awaiting`. Backends that only learn
+   *  status from live events (cmux) start every pane as `idle`, so a menu open
+   *  *before* the bridge attached would be missed — detect one directly from the
+   *  screen and promote to awaiting. parseMenu returning null (the common idle
+   *  case) means no spurious prompt, so this is safe for every backend. */
+  private async probeInitialBlock(): Promise<void> {
+    if (this.state === "awaiting") {
+      void this.emitBlockedMenu();
+      return;
+    }
+    let screen = "";
+    try {
+      screen = await getMux().read(this.paneId, 45);
+    } catch {
+      return;
+    }
+    if (this.disposed) return;
+    if (parseMenu(screen)) {
+      this.state = "awaiting";
+      void this.emitBlockedMenu();
     }
   }
 

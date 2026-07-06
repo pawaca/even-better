@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { Multiplexer, PaneInfo, PaneStatus, StatusSub } from "./multiplexer.js";
 
 // cmux Multiplexer: drives the `cmux` CLI over its Unix socket. Pane identity is
@@ -31,11 +31,19 @@ function resolveCmuxBin(): string {
 
 const CMUX_BIN = resolveCmuxBin();
 
+/** The cmux binary exists — CMUX_BIN, the macOS app bundle, or `cmux` on PATH. */
+function cmuxBinExists(): boolean {
+  if (process.env.CMUX_BIN) return existsSync(process.env.CMUX_BIN);
+  if (existsSync("/Applications/cmux.app/Contents/Resources/bin/cmux")) return true;
+  return (process.env.PATH ?? "")
+    .split(delimiter)
+    .some((dir) => dir && existsSync(join(dir, "cmux")));
+}
+
 /** True when cmux looks usable on this machine (binary present + its state dir).
  *  Cheap and synchronous so startup selection needn't spawn a probe. */
 export function cmuxAvailable(): boolean {
-  if (process.env.CMUX_BIN) return existsSync(process.env.CMUX_BIN);
-  return existsSync("/Applications/cmux.app") && existsSync(CMUX_HOME);
+  return cmuxBinExists() && existsSync(CMUX_HOME);
 }
 
 function cmux(args: string[]): Promise<string> {
