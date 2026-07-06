@@ -96,7 +96,8 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 
 ## even-terminal protocol: four consumption semantics
 
-The app renders each event type differently. Emit the right one:
+The app renders each event type differently. Emit the right one (full field-level
+reference — every type, both directions — in `docs/PROTOCOL.md`):
 
 | Semantic | Events | App behavior |
 |----------|--------|--------------|
