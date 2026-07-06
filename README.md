@@ -37,14 +37,16 @@ pane.
 - **Discovery** — `agent.list` over herdr's unix socket
   (`~/.config/herdr/herdr.sock`); every agent pane becomes a "session"
   (session id = pane id, e.g. `w1:pQ`).
-- **Output (transcript-first)** — for claude panes the session transcript
-  (`~/.claude/projects/*/<session>.jsonl`) is the primary source: assistant
-  text → `text_delta`, tool calls → `tool_start` + a one-line summary, tool
-  results → `tool_end` with truncated output, token usage → result counts.
-  Structured, lossless, no screen-scraping heuristics. Screen polling
-  (visible, 300ms, volatile-filter + multiset diff) remains only as fallback
-  for panes without a readable transcript (codex, fresh claude before its
-  session id appears — a 2s probe switches over automatically).
+- **Output (transcript-first)** — for claude and codex panes, the structured
+  session transcript is the primary source: assistant text -> `text_delta`,
+  tool calls -> `tool_start` + a one-line summary, tool results -> `tool_end`
+  with truncated output, token usage -> result counts. Claude transcripts live
+  under `~/.claude/projects/*/<session>.jsonl`; Codex rollout transcripts live
+  under `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*<session>.jsonl`.
+  Structured sources are lossless and avoid screen-scraping heuristics. Screen
+  polling (visible, 300ms, volatile-filter + multiset diff) remains only as a
+  fallback while herdr has not exposed a session id yet or when the transcript
+  file cannot be found; a 2s probe switches over automatically once available.
 - **Status** — subscribes to `pane.agent_status_changed`
   (working→busy, blocked→awaiting, idle/done→idle + result).
 - **Blocked screens** — when an agent blocks, the visible screen is parsed for
@@ -73,9 +75,13 @@ Environment variables:
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
 | `ACCESS` | `lan` | How the phone reaches the bridge — sets both the bind and the single QR: `lan` (same Wi-Fi), `local` (same machine), `tailscale`, `tailscale-funnel` (or `funnel`), `pinggy`, `bore`, `ngrok`, `cloudflared`, or a literal IP |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
+| `CODEX_HOME` | `~/.codex` | Codex home used to find rollout transcripts |
+| `DEFAULT_PROVIDER` | focused herdr agent | Provider hint encoded in the QR; it does not spawn or switch the underlying agent |
+| `EVENT_LOG` | `/tmp/even-better-events.log` | JSONL log of app requests, SSE events, and diagnostics |
+| `EVENT_LOG_TEXT` | `1` | Set `0` to omit high-volume `text_delta` rows from `EVENT_LOG` |
+| `DEBUG_STREAM` | `1` | Set `0` to silence capture/send/drop stream tracing |
 | `NO_QR` | – | `1` disables the QR banner |
 | `VERBOSE` | – | `1` logs every SSE event |
-| `DEBUG_POLL` | – | `1` logs poll diffs |
 
 The phone must reach your machine over the network (same LAN, Tailscale, etc.).
 
@@ -96,7 +102,10 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 - **`ACCESS=tailscale-funnel`** (shorthand: `funnel`) — public HTTPS at your stable
   `*.ts.net` name; the **phone needs no client**, SSE works (verified), and it
   tears the tunnel down when the bridge exits. Requires Funnel enabled in the
-  Tailscale admin console once. Best no-install remote option.
+  Tailscale admin console once. Best no-install remote option. The bridge runs
+  `tailscale funnel <PORT>` in the foreground, scrapes the public URL, and runs
+  `tailscale funnel reset` on exit so a crashed child does not leave the local
+  bridge publicly exposed.
 - **`ACCESS=pinggy`** — quick public tunnel over the built-in `ssh`, zero install,
   supports SSE. Free tunnels rotate every 60 min. Good for a one-off share.
   `bore`/`ngrok` also work (`bore` is plain HTTP; `ngrok` needs an authtoken).
@@ -113,12 +122,18 @@ scan the QR once; rotate it by deleting that file (or set `BRIDGE_TOKEN`).
 `POST /api/question-response` · `POST /api/interrupt` · `GET /api/status` ·
 `GET /api/messages` · `GET /api/sessions/:id/history`
 
+## Troubleshooting
+
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for runbooks covering:
+why a pane fell back to `ScreenTimeline`, how `provider` relates to the real
+herdr agent, how to read `EVENT_LOG`, and how to verify Tailscale Funnel/SSE.
+
 ## Caveats
 
 - Cost isn't computed (`result.costUsd` is always 0); token counts are reported.
-- For panes without a readable transcript (codex, or a fresh claude before its
-  session id appears), output falls back to lossy screen scraping until the
-  transcript is available.
+- For panes without a readable transcript (for example, a fresh agent before
+  herdr exposes its session id), output falls back to lossy screen scraping
+  until the transcript is available.
 - Permission menus are parsed heuristically from the screen; exotic prompts
   fall back to a "check your terminal" notification.
 - The bridge only *mirrors* agents — starting a brand-new session from the
