@@ -31,12 +31,6 @@ function resolveCmuxBin(): string {
 
 const CMUX_BIN = resolveCmuxBin();
 
-// The CLI talks to a running cmux over this Unix socket (CMUX_SOCKET_PATH
-// overrides; default per `cmux --help`). Its presence means cmux is actually
-// live — unlike ~/.cmuxterm, which lingers after cmux has been used and exited.
-const CMUX_SOCKET =
-  process.env.CMUX_SOCKET_PATH ?? join(homedir(), ".local", "state", "cmux", "cmux.sock");
-
 /** The cmux binary exists — CMUX_BIN, the macOS app bundle, or `cmux` on PATH. */
 function cmuxBinExists(): boolean {
   if (process.env.CMUX_BIN) return existsSync(process.env.CMUX_BIN);
@@ -46,12 +40,18 @@ function cmuxBinExists(): boolean {
     .some((dir) => dir && existsSync(join(dir, "cmux")));
 }
 
-/** True when cmux is actually RUNNING here (binary present + live control
- *  socket). Checking the socket, not persisted state, keeps auto-selection from
- *  falsely detecting cmux on a herdr-only machine that once used cmux. Cheap and
- *  synchronous so startup selection needn't spawn a probe. */
-export function cmuxAvailable(): boolean {
-  return cmuxBinExists() && existsSync(CMUX_SOCKET);
+/** True when cmux is actually RUNNING here. Probes with `cmux ping` (~20ms) so
+ *  the CLI resolves its own socket — robust across versions and socket paths
+ *  (default differs by build), unlike checking persisted ~/.cmuxterm state or a
+ *  hard-coded socket path. Async because it spawns the probe. */
+export async function cmuxAvailable(): Promise<boolean> {
+  if (!cmuxBinExists()) return false;
+  try {
+    await cmux(["ping"]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function cmux(args: string[]): Promise<string> {
