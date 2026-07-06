@@ -134,7 +134,13 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
     case "WebFetch":
       return `Fetch ${s(input.url)}`;
     case "WebSearch":
+      if (typeof input.url === "string") return `Open ${s(input.url)}`;
+      if (Array.isArray(input.queries) && input.queries.length) return `Search ${s(input.queries[0])}`;
       return `Search ${s(input.query)}`;
+    case "tool_search":
+    case "tool_search_tool":
+    case "functions.tool_search_tool":
+      return `Search tools ${s(input.query)}`;
     case "Task":
     case "Agent":
       return `Agent: ${s(input.description ?? input.prompt)}`;

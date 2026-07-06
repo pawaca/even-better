@@ -16,6 +16,7 @@ export type AgentEvent =
   | { t: "say"; text: string; usage?: Usage } // assistant prose
   | { t: "tool"; id: string; name: string; input: Record<string, unknown>; usage?: Usage }
   | { t: "toolResult"; id: string; output: string; ok: boolean }
+  | { t: "turnEnd"; success: boolean; text?: string } // explicit turn outcome from a structured transcript
   | { t: "usage"; usage: Usage }; // token accounting emitted separately by some agents
 
 /**

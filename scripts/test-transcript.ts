@@ -36,6 +36,8 @@ t("sum-codex-exec", summarizeTool("exec_command", {cmd:"pnpm check"}), "$ pnpm c
 t("sum-read", summarizeTool("Read", {file_path:"/a/b.ts"}), "Read /a/b.ts");
 t("sum-write", summarizeTool("Write", {file_path:"/a/b.txt"}), "Write /a/b.txt");
 t("sum-plan", summarizeTool("update_plan", {plan:[]}), "Update plan");
+t("sum-web-search-url", summarizeTool("WebSearch", {type:"open_page", url:"https://example.com"}), "Open https://example.com");
+t("sum-tool-search", summarizeTool("tool_search", {query:"github issue"}), "Search tools github issue");
 t("sum-unknown", summarizeTool("MyTool", {q:"hello"}), "MyTool: hello");
 
 // Codex interactive rollout transcript
@@ -71,6 +73,15 @@ t("codex-event-dedup-response-first", [codexMessageDedupe.parse(responseMessage)
 const codexMessageDedupeReverse = new CodexEntryParser();
 t("codex-event-dedup-event-first", [codexMessageDedupeReverse.parse(eventMessage), codexMessageDedupeReverse.parse(responseMessage)],
   [[{t:"say", text:"同一条助手消息"}], []]);
+const codexTaskCompleteDedupe = new CodexEntryParser();
+const taskComplete = JSON.stringify({
+  timestamp: "2026-07-06T00:00:00.020Z",
+  type: "event_msg",
+  payload: {type:"task_complete", last_agent_message:"同一条助手消息"},
+});
+t("codex-task-complete-dedup", [codexTaskCompleteDedupe.parse(responseMessage), codexTaskCompleteDedupe.parse(taskComplete)],
+  [[{t:"say", text:"同一条助手消息"}], []]);
+t("codex-task-complete-fallback", new CodexEntryParser().parse(taskComplete), [{t:"say", text:"同一条助手消息"}]);
 const codexTool = parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"function_call", call_id:"call_1", name:"exec_command", arguments:JSON.stringify({cmd:"ls", workdir:"/tmp"})},
@@ -95,6 +106,105 @@ const codexCustomResult = parseCodexEntry(JSON.stringify({
 }));
 t("codex-custom-tool-result", [codexCustomResult[0]?.t, (codexCustomResult[0] as any)?.id, (codexCustomResult[0] as any)?.output],
   ["toolResult", "call_patch", "Success"]);
+const codexWebSearch = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_1", status:"completed", action:{type:"search", query:"tailscale funnel", queries:["tailscale funnel"]}},
+}));
+t("codex-web-search", codexWebSearch, [
+  {t:"tool", id:"ws_1", name:"WebSearch", input:{type:"search", query:"tailscale funnel", queries:["tailscale funnel"]}},
+  {t:"toolResult", id:"ws_1", output:"Searched tailscale funnel", ok:true},
+]);
+const codexWebSearchDedupe = new CodexEntryParser();
+const webSearchEnd = JSON.stringify({
+  type: "event_msg",
+  payload: {type:"web_search_end", call_id:"ws_2", action:{type:"open_page", url:"https://tailscale.com/kb/1223/funnel"}},
+});
+const webSearchCall = JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_2", status:"completed", action:{type:"open_page", url:"https://tailscale.com/kb/1223/funnel"}},
+});
+t("codex-web-search-end-dedup", [codexWebSearchDedupe.parse(webSearchEnd), codexWebSearchDedupe.parse(webSearchCall)], [
+  [
+    {t:"tool", id:"ws_2", name:"WebSearch", input:{type:"open_page", url:"https://tailscale.com/kb/1223/funnel"}},
+    {t:"toolResult", id:"ws_2", output:"Opened https://tailscale.com/kb/1223/funnel", ok:true},
+  ],
+  [],
+]);
+const codexWebSearchProgress = new CodexEntryParser();
+const webSearchProgressStart = JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_3", status:"searching", action:{type:"search", query:"codex rollout"}},
+});
+const webSearchProgressDone = JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_3", status:"completed", action:{type:"search", query:"codex rollout"}},
+});
+t("codex-web-search-progress", [
+  codexWebSearchProgress.parse(webSearchProgressStart),
+  codexWebSearchProgress.parse(webSearchProgressDone),
+], [
+  [{t:"tool", id:"ws_3", name:"WebSearch", input:{type:"search", query:"codex rollout"}}],
+  [{t:"toolResult", id:"ws_3", output:"Searched codex rollout", ok:true}],
+]);
+const codexToolSearch = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_call", call_id:"call_tools", status:"completed", arguments:{query:"github pull request", limit:8}},
+}));
+t("codex-tool-search-call", codexToolSearch, [
+  {t:"tool", id:"call_tools", name:"tool_search", input:{query:"github pull request", limit:8}},
+]);
+const codexToolSearchStartDedupe = new CodexEntryParser();
+const codexToolSearchPendingCall = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_call", call_id:"call_tools_dedupe", status:"in_progress", arguments:{query:"github pull request"}},
+});
+const codexToolSearchCompletedCall = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_call", call_id:"call_tools_dedupe", status:"completed", arguments:{query:"github pull request"}},
+});
+t("codex-tool-search-start-dedupe", [
+  codexToolSearchStartDedupe.parse(codexToolSearchPendingCall),
+  codexToolSearchStartDedupe.parse(codexToolSearchCompletedCall),
+], [
+  [{t:"tool", id:"call_tools_dedupe", name:"tool_search", input:{query:"github pull request"}}],
+  [],
+]);
+const codexToolSearchOutput = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_output", call_id:"call_tools", status:"completed", tools:[
+    {namespace:"github", name:"github.pr"},
+    {namespace:"linear", name:"linear.issue"},
+  ]},
+}));
+t("codex-tool-search-output", codexToolSearchOutput, [
+  {t:"toolResult", id:"call_tools", output:"Found 2 tools: github, linear", ok:true},
+]);
+const codexToolSearchProgress = new CodexEntryParser();
+const codexToolSearchPendingOutput = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_output", call_id:"call_tools_progress", status:"in_progress", tools:[]},
+});
+const codexToolSearchCompletedOutput = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_output", call_id:"call_tools_progress", status:"completed", tools:[
+    {namespace:"github", name:"github.pr"},
+  ]},
+});
+t("codex-tool-search-output-progress", [
+  codexToolSearchProgress.parse(codexToolSearchPendingOutput),
+  codexToolSearchProgress.parse(codexToolSearchCompletedOutput),
+], [
+  [],
+  [{t:"toolResult", id:"call_tools_progress", output:"Found 1 tools: github", ok:true}],
+]);
+t("codex-turn-aborted", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"turn_aborted", reason:"interrupted"},
+})), [{t:"turnEnd", success:false, text:"Interrupted by user"}]);
+t("codex-thread-rolled-back", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"thread_rolled_back", num_turns:2},
+})), [{t:"turnEnd", success:false, text:"Rolled back 2 turns"}]);
 t("codex-usage", parseCodexEntry(JSON.stringify({
   type: "event_msg",
   payload: {type:"token_count", info:{last_token_usage:{input_tokens:10, output_tokens:3}}},
