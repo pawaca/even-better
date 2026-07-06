@@ -153,6 +153,22 @@ const codexToolSearch = parseCodexEntry(JSON.stringify({
 t("codex-tool-search-call", codexToolSearch, [
   {t:"tool", id:"call_tools", name:"tool_search", input:{query:"github pull request", limit:8}},
 ]);
+const codexToolSearchStartDedupe = new CodexEntryParser();
+const codexToolSearchPendingCall = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_call", call_id:"call_tools_dedupe", status:"in_progress", arguments:{query:"github pull request"}},
+});
+const codexToolSearchCompletedCall = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_call", call_id:"call_tools_dedupe", status:"completed", arguments:{query:"github pull request"}},
+});
+t("codex-tool-search-start-dedupe", [
+  codexToolSearchStartDedupe.parse(codexToolSearchPendingCall),
+  codexToolSearchStartDedupe.parse(codexToolSearchCompletedCall),
+], [
+  [{t:"tool", id:"call_tools_dedupe", name:"tool_search", input:{query:"github pull request"}}],
+  [],
+]);
 const codexToolSearchOutput = parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"tool_search_output", call_id:"call_tools", status:"completed", tools:[

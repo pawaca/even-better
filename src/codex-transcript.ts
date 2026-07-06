@@ -190,6 +190,7 @@ export class CodexEntryParser {
   private lastUsageSnapshot = "";
   private recentMessages = new Map<string, { at: number; source: MessageSource }>();
   private webSearches = new Map<string, WebSearchState>();
+  private startedToolSearches = new Set<string>();
 
   parse(line: string): AgentEvent[] {
     let entry: CodexEntry;
@@ -256,7 +257,7 @@ export class CodexEntryParser {
 
     if (payload.type === "tool_search_call") {
       const id = payload.call_id ?? payload.id;
-      if (!id) return [];
+      if (!id || !this.rememberToolSearch(id)) return [];
       return [{ t: "tool", id, name: "tool_search", input: parseArguments(payload.arguments) }];
     }
 
@@ -299,6 +300,16 @@ export class CodexEntryParser {
       const first = this.webSearches.keys().next().value;
       if (typeof first === "string") this.webSearches.delete(first);
     }
+  }
+
+  private rememberToolSearch(id: string): boolean {
+    if (this.startedToolSearches.has(id)) return false;
+    this.startedToolSearches.add(id);
+    if (this.startedToolSearches.size > 500) {
+      const first = this.startedToolSearches.values().next().value;
+      if (typeof first === "string") this.startedToolSearches.delete(first);
+    }
+    return true;
   }
 
   private parseChatMessage(
