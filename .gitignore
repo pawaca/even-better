@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Agent tooling (per-machine; installed via `npx skills add ...`, not vendored)
+.claude/
+skills-lock.json
