@@ -29,3 +29,16 @@ os3.text("🎉🎊🥳🚀✨");
 await os3.drain();
 const joined = got3.join("");
 t("emoji intact", joined === "🎉🎊🥳🚀✨" && got3.every((s) => !s.includes("�")), JSON.stringify(joined));
+
+// flush() preserves order and releases pending text immediately.
+const got4: object[] = [];
+const os4 = new OutputStream((m) => got4.push(m), 50);
+os4.text("abcdef");
+os4.event({ type: "tool_end", name: "Bash" });
+os4.text("ghijkl");
+await new Promise((r) => setTimeout(r, 5));
+os4.flush();
+const got4Text = got4.filter((m) => (m as any).type === "text_delta").map((m) => (m as any).text).join("");
+const got4EventIdx = got4.findIndex((m) => (m as any).type === "tool_end");
+t("flush reconstructs text", got4Text === "abcdefghijkl", JSON.stringify(got4Text));
+t("flush keeps event order", got4EventIdx > 0 && got4EventIdx < got4.length - 1, JSON.stringify(got4));

@@ -605,10 +605,9 @@ export class PaneBridge {
     if (this.onTranscript) {
       await new Promise((r) => setTimeout(r, 1100));
     }
-    // Let the streamed content finish before result/idle close the turn out —
-    // otherwise idle would land before the last text and the app would get
-    // stuck showing activity again.
-    await this.out.drain();
+    // Release any paced tail before result/idle close the turn. This preserves
+    // wire order without making long answers delay the terminal state.
+    this.out.flush();
     let text = "";
     if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
