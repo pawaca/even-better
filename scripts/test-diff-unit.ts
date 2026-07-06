@@ -16,6 +16,7 @@ t("filter      ", filterVolatile([
   "✻ Inferring…",
   "> 用户说的话回显",
 ]), ["⏺ real assistant text"]);
+t("filter-prompt", filterVolatile(["> old prompt", "› codex prompt", "assistant"]), ["assistant"]);
 // tool-call lines must survive the filter now
 t("keep-tool   ", filterVolatile([
   "  Running 1 shell command…",

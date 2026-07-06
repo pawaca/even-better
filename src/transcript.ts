@@ -1,7 +1,8 @@
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, Timeline, Usage } from "./spine.js";
+import { JsonlTail } from "./jsonl-tail.js";
 
 // Tail a Claude Code session transcript (~/.claude/projects/*/<id>.jsonl).
 // The transcript is the authoritative record of a session: user prompts,
@@ -114,12 +115,18 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
   switch (name) {
     case "Bash":
       return `$ ${s(input.command)}`;
+    case "exec_command":
+    case "functions.exec_command":
+      return `$ ${s(input.cmd ?? input.command)}`;
     case "Read":
       return `Read ${s(input.file_path)}`;
     case "Edit":
       return `Edit ${s(input.file_path)}`;
     case "Write":
       return `Write ${s(input.file_path)}`;
+    case "apply_patch":
+    case "functions.apply_patch":
+      return "Apply patch";
     case "Glob":
       return `Glob ${s(input.pattern)}`;
     case "Grep":
@@ -133,6 +140,16 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
       return `Agent: ${s(input.description ?? input.prompt)}`;
     case "TodoWrite":
       return "Update todos";
+    case "update_plan":
+    case "functions.update_plan":
+      return "Update plan";
+    case "view_image":
+    case "functions.view_image":
+      return `View image ${s(input.path)}`;
+    case "multi_tool_use.parallel": {
+      const n = Array.isArray(input.tool_uses) ? input.tool_uses.length : 0;
+      return n ? `Run ${n} tools` : "Run tools";
+    }
     default: {
       const first = Object.values(input).find((v) => typeof v === "string");
       return first ? `${name}: ${s(first, 80)}` : name;
@@ -140,53 +157,12 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
   }
 }
 
-/**
- * Incremental transcript tailer: remembers the byte offset and returns only
- * events appended since the last call. Starts at the current end of file
- * (history is not replayed).
- */
-export class TranscriptTail {
-  private offset: number;
-  private partial = "";
-
-  constructor(readonly filePath: string) {
-    this.offset = statSync(filePath).size;
-  }
-
-  async readNew(): Promise<AgentEvent[]> {
-    const size = statSync(this.filePath).size;
-    if (size < this.offset) {
-      // truncated/rotated — restart from the end
-      this.offset = size;
-      this.partial = "";
-      return [];
-    }
-    if (size === this.offset) return [];
-    const chunk = await new Promise<string>((resolve, reject) => {
-      let data = "";
-      createReadStream(this.filePath, { start: this.offset, end: size - 1, encoding: "utf8" })
-        .on("data", (d) => (data += d))
-        .on("end", () => resolve(data))
-        .on("error", reject);
-    });
-    this.offset = size;
-    const text = this.partial + chunk;
-    const lines = text.split("\n");
-    this.partial = lines.pop() ?? ""; // last element may be an incomplete line
-    const out: AgentEvent[] = [];
-    for (const line of lines) {
-      if (line.trim()) out.push(...parseEntry(line));
-    }
-    return out;
-  }
-}
-
 /** Timeline over a Claude Code session transcript: structured, lossless, no
  *  heuristics. Returns null-safe by construction (caller checks the file). */
 export class TranscriptTimeline implements Timeline {
-  private tail: TranscriptTail;
+  private tail: JsonlTail;
   constructor(filePath: string) {
-    this.tail = new TranscriptTail(filePath);
+    this.tail = new JsonlTail(filePath, parseEntry);
   }
   poll(): Promise<AgentEvent[]> {
     return this.tail.readNew();

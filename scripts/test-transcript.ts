@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CodexEntryParser, findCodexSessionFile, parseCodexEntry } from "../src/codex-transcript.js";
 import { parseEntry, summarizeTool } from "../src/transcript.js";
 
 const t = (name: string, got: unknown, want: unknown) => {
@@ -28,6 +32,97 @@ t("sidechain", parseEntry(JSON.stringify({type:"assistant", isSidechain:true, me
 t("thinking", parseEntry(JSON.stringify({type:"assistant", message:{content:[{type:"thinking",thinking:"..."}]}})), []);
 // summaries
 t("sum-bash", summarizeTool("Bash", {command:"grep -r foo ."}), "$ grep -r foo .");
+t("sum-codex-exec", summarizeTool("exec_command", {cmd:"pnpm check"}), "$ pnpm check");
 t("sum-read", summarizeTool("Read", {file_path:"/a/b.ts"}), "Read /a/b.ts");
 t("sum-write", summarizeTool("Write", {file_path:"/a/b.txt"}), "Write /a/b.txt");
+t("sum-plan", summarizeTool("update_plan", {plan:[]}), "Update plan");
 t("sum-unknown", summarizeTool("MyTool", {q:"hello"}), "MyTool: hello");
+
+// Codex interactive rollout transcript
+t("codex-user", parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"message", role:"user", content:[{type:"input_text", text:"实现 codex 支持"}]},
+})), [{t:"prompt", text:"实现 codex 支持"}]);
+t("codex-assistant", parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"message", role:"assistant", content:[{type:"output_text", text:"我会先读代码。"}]},
+})), [{t:"say", text:"我会先读代码。"}]);
+t("codex-event-user", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"user_message", message:"从 event_msg 来的用户消息"},
+})), [{t:"prompt", text:"从 event_msg 来的用户消息"}]);
+t("codex-event-agent", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"agent_message", message:"从 event_msg 来的助手消息"},
+})), [{t:"say", text:"从 event_msg 来的助手消息"}]);
+const codexMessageDedupe = new CodexEntryParser();
+const responseMessage = JSON.stringify({
+  timestamp: "2026-07-06T00:00:00.000Z",
+  type: "response_item",
+  payload: {type:"message", role:"assistant", content:[{type:"output_text", text:"同一条助手消息"}]},
+});
+const eventMessage = JSON.stringify({
+  timestamp: "2026-07-06T00:00:00.010Z",
+  type: "event_msg",
+  payload: {type:"agent_message", message:"同一条助手消息"},
+});
+t("codex-event-dedup-response-first", [codexMessageDedupe.parse(responseMessage), codexMessageDedupe.parse(eventMessage)],
+  [[{t:"say", text:"同一条助手消息"}], []]);
+const codexMessageDedupeReverse = new CodexEntryParser();
+t("codex-event-dedup-event-first", [codexMessageDedupeReverse.parse(eventMessage), codexMessageDedupeReverse.parse(responseMessage)],
+  [[{t:"say", text:"同一条助手消息"}], []]);
+const codexTool = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"function_call", call_id:"call_1", name:"exec_command", arguments:JSON.stringify({cmd:"ls", workdir:"/tmp"})},
+}));
+t("codex-tool", [codexTool[0]?.t, (codexTool[0] as any)?.id, (codexTool[0] as any)?.name, (codexTool[0] as any)?.input],
+  ["tool", "call_1", "exec_command", {cmd:"ls", workdir:"/tmp"}]);
+const codexResult = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"function_call_output", call_id:"call_1", output:"file1\nfile2"},
+}));
+t("codex-tool-result", [codexResult[0]?.t, (codexResult[0] as any)?.id, (codexResult[0] as any)?.output],
+  ["toolResult", "call_1", "file1\nfile2"]);
+const codexCustomTool = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"custom_tool_call", call_id:"call_patch", name:"apply_patch", input:"*** Begin Patch\n*** End Patch\n"},
+}));
+t("codex-custom-tool", [codexCustomTool[0]?.t, (codexCustomTool[0] as any)?.id, (codexCustomTool[0] as any)?.name, (codexCustomTool[0] as any)?.input],
+  ["tool", "call_patch", "apply_patch", {input:"*** Begin Patch\n*** End Patch\n"}]);
+const codexCustomResult = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"custom_tool_call_output", call_id:"call_patch", output:"Success"},
+}));
+t("codex-custom-tool-result", [codexCustomResult[0]?.t, (codexCustomResult[0] as any)?.id, (codexCustomResult[0] as any)?.output],
+  ["toolResult", "call_patch", "Success"]);
+t("codex-usage", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"token_count", info:{last_token_usage:{input_tokens:10, output_tokens:3}}},
+})), [{t:"usage", usage:{input:10, output:3}}]);
+const codexParser = new CodexEntryParser();
+const tokenCount = (input: number, output: number, lastInput = input, lastOutput = output) => JSON.stringify({
+  type: "event_msg",
+  payload: {type:"token_count", info:{
+    total_token_usage:{input_tokens:input, output_tokens:output},
+    last_token_usage:{input_tokens:lastInput, output_tokens:lastOutput},
+  }},
+});
+t("codex-usage-total-first", codexParser.parse(tokenCount(10, 3)), [{t:"usage", usage:{input:10, output:3}}]);
+t("codex-usage-total-dupe", codexParser.parse(tokenCount(10, 3)), []);
+t("codex-usage-total-delta", codexParser.parse(tokenCount(15, 4, 99, 99)), [{t:"usage", usage:{input:5, output:1}}]);
+
+const oldCodexHome = process.env.CODEX_HOME;
+const tmpCodexHome = mkdtempSync(join(tmpdir(), "even-better-codex-home-"));
+try {
+  const sessionId = "019f-test-session";
+  const sessionDir = join(tmpCodexHome, "sessions", "2026", "07", "06");
+  const sessionFile = join(sessionDir, `rollout-test-${sessionId}.jsonl`);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(sessionFile, "");
+  process.env.CODEX_HOME = tmpCodexHome;
+  t("codex-home-session-file", findCodexSessionFile(sessionId), sessionFile);
+} finally {
+  if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = oldCodexHome;
+  rmSync(tmpCodexHome, { recursive: true, force: true });
+}

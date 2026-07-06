@@ -1,0 +1,266 @@
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AgentEvent, Timeline } from "./spine.js";
+import { JsonlTail } from "./jsonl-tail.js";
+
+// Tail a Codex interactive rollout transcript
+// (~/.codex/sessions/YYYY/MM/DD/rollout-...<id>.jsonl). This is the structured
+// source for Codex panes; screen scraping remains only a fallback before herdr
+// detects the session id or when a rollout file cannot be found.
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function readDirEntries(dir: string) {
+  return readdirSync(dir, { withFileTypes: true });
+}
+
+export function findCodexSessionFile(sessionId: string): string | null {
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const root = join(codexHome, "sessions");
+  if (!existsSync(root)) return null;
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    if (!dir) continue;
+    let entries: ReturnType<typeof readDirEntries>;
+    try {
+      entries = readDirEntries(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(p);
+      } else if (entry.isFile() && entry.name.endsWith(`${sessionId}.jsonl`)) {
+        return p;
+      }
+    }
+  }
+  return null;
+}
+
+interface CodexUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+interface CodexContent {
+  type?: string;
+  text?: string;
+}
+
+interface CodexPayload {
+  type?: string;
+  role?: string;
+  message?: unknown;
+  content?: unknown;
+  id?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: unknown;
+  input?: unknown;
+  output?: unknown;
+  status?: string;
+  info?: {
+    last_token_usage?: CodexUsage;
+    total_token_usage?: CodexUsage;
+  };
+}
+
+interface CodexEntry {
+  timestamp?: string;
+  type?: string;
+  payload?: CodexPayload;
+}
+
+type MessageSource = "response_item" | "event_msg";
+
+const MESSAGE_DEDUPE_MS = 30_000;
+
+function contentText(content: unknown, type: "input_text" | "output_text"): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!isRecord(part)) continue;
+    const p = part as CodexContent;
+    if (p.type === type && typeof p.text === "string") parts.push(p.text);
+  }
+  return parts.join("\n");
+}
+
+function parseArguments(args: unknown): Record<string, unknown> {
+  if (isRecord(args)) return args;
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args) as unknown;
+      if (isRecord(parsed)) return parsed;
+      return { value: parsed };
+    } catch {
+      return args ? { arguments: args } : {};
+    }
+  }
+  return args === undefined || args === null ? {} : { value: args };
+}
+
+function parseCustomInput(input: unknown): Record<string, unknown> {
+  if (isRecord(input)) return input;
+  return input === undefined || input === null ? {} : { input };
+}
+
+function outputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === undefined || output === null) return "";
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
+function usageFrom(u: CodexUsage | undefined): { input: number; output: number } | null {
+  if (!u) return null;
+  return { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0 };
+}
+
+function usageKey(u: { input: number; output: number }): string {
+  return `${u.input}:${u.output}`;
+}
+
+export class CodexEntryParser {
+  private lastTotalUsage: { input: number; output: number } | null = null;
+  private lastUsageSnapshot = "";
+  private recentMessages = new Map<string, { at: number; source: MessageSource }>();
+
+  parse(line: string): AgentEvent[] {
+    let entry: CodexEntry;
+    try {
+      entry = JSON.parse(line) as CodexEntry;
+    } catch {
+      return [];
+    }
+
+    const payload = entry.payload;
+    if (!payload) return [];
+
+    if (entry.type === "event_msg") {
+      if (payload.type === "token_count") return this.parseUsage(payload);
+      if (payload.type === "user_message") {
+        return this.parseChatMessage("user", outputText(payload.message), "event_msg", entry);
+      }
+      if (payload.type === "agent_message") {
+        return this.parseChatMessage("assistant", outputText(payload.message), "event_msg", entry);
+      }
+      return [];
+    }
+
+    if (entry.type !== "response_item") return [];
+
+    if (payload.type === "message") {
+      if (payload.role === "user") {
+        return this.parseChatMessage("user", contentText(payload.content, "input_text"), "response_item", entry);
+      }
+      if (payload.role === "assistant") {
+        return this.parseChatMessage("assistant", contentText(payload.content, "output_text"), "response_item", entry);
+      }
+      return [];
+    }
+
+    if (payload.type === "function_call") {
+      const id = payload.call_id ?? payload.id;
+      const name = payload.name;
+      if (!id || !name) return [];
+      return [{ t: "tool", id, name, input: parseArguments(payload.arguments) }];
+    }
+
+    if (payload.type === "custom_tool_call") {
+      const id = payload.call_id ?? payload.id;
+      const name = payload.name;
+      if (!id || !name) return [];
+      return [{ t: "tool", id, name, input: parseCustomInput(payload.input) }];
+    }
+
+    if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
+      const id = payload.call_id;
+      if (!id) return [];
+      return [{ t: "toolResult", id, output: outputText(payload.output), ok: payload.status !== "failed" }];
+    }
+
+    return [];
+  }
+
+  private parseChatMessage(
+    role: "user" | "assistant",
+    raw: string,
+    source: MessageSource,
+    entry: CodexEntry,
+  ): AgentEvent[] {
+    const text = raw.trim();
+    if (!text || (role === "user" && text.trimStart().startsWith("<"))) return [];
+    if (this.isDuplicateMessage(role, text, source, entry)) return [];
+    return role === "user" ? [{ t: "prompt", text }] : [{ t: "say", text }];
+  }
+
+  private isDuplicateMessage(
+    role: "user" | "assistant",
+    text: string,
+    source: MessageSource,
+    entry: CodexEntry,
+  ): boolean {
+    const at = entry.timestamp ? Date.parse(entry.timestamp) : Date.now();
+    const now = Number.isFinite(at) ? at : Date.now();
+    const key = `${role}:${text}`;
+    const prev = this.recentMessages.get(key);
+    this.recentMessages.set(key, { at: now, source });
+    if (this.recentMessages.size > 200) {
+      const cutoff = now - MESSAGE_DEDUPE_MS;
+      for (const [k, v] of this.recentMessages) if (v.at < cutoff) this.recentMessages.delete(k);
+    }
+    return prev !== undefined && prev.source !== source && Math.abs(now - prev.at) <= MESSAGE_DEDUPE_MS;
+  }
+
+  private parseUsage(payload: CodexPayload): AgentEvent[] {
+    const total = usageFrom(payload.info?.total_token_usage);
+    if (total) {
+      const prev = this.lastTotalUsage;
+      this.lastTotalUsage = total;
+      const delta = prev
+        ? { input: Math.max(0, total.input - prev.input), output: Math.max(0, total.output - prev.output) }
+        : usageFrom(payload.info?.last_token_usage);
+      if (!delta) return [];
+      if (delta.input === 0 && delta.output === 0) return [];
+      return [{ t: "usage", usage: delta }];
+    }
+
+    const last = usageFrom(payload.info?.last_token_usage);
+    if (!last) return [];
+    const key = usageKey(last);
+    if (key === this.lastUsageSnapshot) return [];
+    this.lastUsageSnapshot = key;
+    return [{ t: "usage", usage: last }];
+  }
+}
+
+export function parseCodexEntry(line: string): AgentEvent[] {
+  return new CodexEntryParser().parse(line);
+}
+
+export class CodexTranscriptTimeline implements Timeline {
+  private tail: JsonlTail;
+  private parser = new CodexEntryParser();
+
+  constructor(filePath: string) {
+    this.tail = new JsonlTail(filePath, (line) => this.parser.parse(line));
+  }
+
+  poll(): Promise<AgentEvent[]> {
+    return this.tail.readNew();
+  }
+
+  dispose(): void {
+    // stateless file tail — nothing to release
+  }
+}

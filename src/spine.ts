@@ -15,7 +15,8 @@ export type AgentEvent =
   | { t: "prompt"; text: string } // a user turn (typed in the terminal or injected)
   | { t: "say"; text: string; usage?: Usage } // assistant prose
   | { t: "tool"; id: string; name: string; input: Record<string, unknown>; usage?: Usage }
-  | { t: "toolResult"; id: string; output: string; ok: boolean };
+  | { t: "toolResult"; id: string; output: string; ok: boolean }
+  | { t: "usage"; usage: Usage }; // token accounting emitted separately by some agents
 
 /**
  * A source of AgentEvents for one agent in one pane. Passive: the core polls
