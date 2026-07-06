@@ -1,4 +1,7 @@
-import { CodexEntryParser, parseCodexEntry } from "../src/codex-transcript.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CodexEntryParser, findCodexSessionFile, parseCodexEntry } from "../src/codex-transcript.js";
 import { parseEntry, summarizeTool } from "../src/transcript.js";
 
 const t = (name: string, got: unknown, want: unknown) => {
@@ -107,3 +110,19 @@ const tokenCount = (input: number, output: number, lastInput = input, lastOutput
 t("codex-usage-total-first", codexParser.parse(tokenCount(10, 3)), [{t:"usage", usage:{input:10, output:3}}]);
 t("codex-usage-total-dupe", codexParser.parse(tokenCount(10, 3)), []);
 t("codex-usage-total-delta", codexParser.parse(tokenCount(15, 4, 99, 99)), [{t:"usage", usage:{input:5, output:1}}]);
+
+const oldCodexHome = process.env.CODEX_HOME;
+const tmpCodexHome = mkdtempSync(join(tmpdir(), "even-better-codex-home-"));
+try {
+  const sessionId = "019f-test-session";
+  const sessionDir = join(tmpCodexHome, "sessions", "2026", "07", "06");
+  const sessionFile = join(sessionDir, `rollout-test-${sessionId}.jsonl`);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(sessionFile, "");
+  process.env.CODEX_HOME = tmpCodexHome;
+  t("codex-home-session-file", findCodexSessionFile(sessionId), sessionFile);
+} finally {
+  if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = oldCodexHome;
+  rmSync(tmpCodexHome, { recursive: true, force: true });
+}

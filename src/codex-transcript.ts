@@ -18,7 +18,8 @@ function readDirEntries(dir: string) {
 }
 
 export function findCodexSessionFile(sessionId: string): string | null {
-  const root = join(homedir(), ".codex", "sessions");
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const root = join(codexHome, "sessions");
   if (!existsSync(root)) return null;
   const stack = [root];
   while (stack.length) {
