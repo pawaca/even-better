@@ -515,14 +515,18 @@ export class PaneBridge {
       },
     });
 
-    // Menu type: trust herdr's rule id first, screen classification second.
+    // Menu type: trust herdr's rule id first, then the backend's own kind hint
+    // (cmux knows question vs permission from the hook that opened it), then
+    // screen classification. The hint keeps an AskUserQuestion from degrading
+    // into a synthesized Yes/No permission when the screen parse is inconclusive.
     const rule = explain.rule ?? "";
+    const kindHint = mux.interactionKind?.(this.paneId);
     const kind: "permission" | "question" =
       /form|workflow/.test(rule)
         ? "question"
         : /permission|blocker/.test(rule)
           ? "permission"
-          : (classified?.kind ?? "permission");
+          : (kindHint ?? classified?.kind ?? "permission");
 
     if (kind === "question") {
       if (!menu) {

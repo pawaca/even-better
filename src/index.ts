@@ -436,18 +436,25 @@ const server = app.listen(PORT, access.bindHost, async () => {
   if (process.env.NO_QR !== "1") qrcodeTerminal.generate(urlFor(host), { small: true }, (code) => console.log(code));
 });
 
+// Tear down both the bridges and the multiplexer (cmux holds a long-lived
+// event-stream child that would otherwise outlive the process).
+function teardown(): void {
+  disposeAll();
+  getMux().dispose?.();
+}
+
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(`[bridge] port ${PORT} already in use — is another bridge running?`);
   } else {
     console.error(`[bridge] server error: ${err.message}`);
   }
-  disposeAll();
+  teardown();
   process.exit(1);
 });
 
 function shutdown(): void {
-  disposeAll();
+  teardown();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

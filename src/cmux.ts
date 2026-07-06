@@ -127,6 +127,9 @@ export class CmuxMultiplexer implements Multiplexer {
 
   private readonly listeners = new Map<string, Listener>();
   private readonly lastStatus = new Map<string, PaneStatus>();
+  // Which kind of interactive blocker last opened per surface, so the bridge can
+  // render a question as a question even when screen parsing is inconclusive.
+  private readonly lastKind = new Map<string, "permission" | "question">();
   // Rebuilt from the hook files; routes prefix-stripped session ids and
   // workspaces to the surface an agent.hook.* event belongs to.
   private surfaceMeta = new Map<string, SurfaceMeta>();
@@ -136,7 +139,6 @@ export class CmuxMultiplexer implements Multiplexer {
 
   private proc: ChildProcess | null = null;
   private buf = "";
-  private restartTimer: NodeJS.Timeout | null = null;
   private disposed = false;
 
   constructor() {
@@ -261,14 +263,15 @@ export class CmuxMultiplexer implements Multiplexer {
 
   private onProcExit(): void {
     this.proc = null;
-    if (this.disposed || this.restartTimer) return;
+    if (this.disposed) return;
     // `--reconnect` handles socket drops internally; a full exit means the CLI
-    // itself died (cmux restart). Notify watchers and respawn shortly.
-    for (const l of this.listeners.values()) l.onClose();
-    this.restartTimer = setTimeout(() => {
-      this.restartTimer = null;
-      if (!this.disposed && this.listeners.size > 0) this.ensureEvents();
-    }, 2000);
+    // itself died (cmux restart). Every StatusSub is now dead, so clear them and
+    // notify: live bridges re-register (their retry -> watchStatus ->
+    // ensureEvents respawns the stream), disposed ones don't — so no stale
+    // listener lingers and we never respawn solely for panes that are gone.
+    const subs = [...this.listeners.values()];
+    this.listeners.clear();
+    for (const l of subs) l.onClose();
   }
 
   private onData(chunk: string): void {
@@ -325,12 +328,14 @@ export class CmuxMultiplexer implements Multiplexer {
         this.routeAgent(payload, "idle");
         return;
       // Authoritative interactive blockers — a menu is genuinely open and can be
-      // answered from the glasses. (Notification is deliberately NOT here: it
-      // also fires for non-blocking idle reminders and carries no message, so it
-      // would fabricate fake prompts.)
+      // answered from the glasses. Carry the kind so the bridge shows a question
+      // as a question, not a synthesized permission. (Notification is NOT here:
+      // it also fires for non-blocking idle reminders and carries no message.)
       case "agent.hook.PermissionRequest":
+        this.routeInteraction(payload, "permission");
+        return;
       case "agent.hook.AskUserQuestion":
-        this.routeAgent(payload, "awaiting");
+        this.routeInteraction(payload, "question");
         return;
       default:
         return;
@@ -359,11 +364,24 @@ export class CmuxMultiplexer implements Multiplexer {
     if (surface) this.routeStatus(surface, status);
   }
 
+  private routeInteraction(payload: Record<string, unknown>, kind: "permission" | "question"): void {
+    const surface = this.surfaceForAgentEvent(payload);
+    if (!surface) return;
+    this.lastKind.set(surface, kind);
+    this.routeStatus(surface, "awaiting");
+  }
+
+  /** The kind of the interactive blocker currently open on a surface. */
+  interactionKind(paneId: string): "permission" | "question" | undefined {
+    return this.lastKind.get(paneId);
+  }
+
   private routeStatus(surfaceId: string, status: PaneStatus): void {
     this.lastStatus.set(surfaceId, status);
     if (status === "closed") {
       this.surfaceMeta.delete(surfaceId);
       this.lastStatus.delete(surfaceId);
+      this.lastKind.delete(surfaceId);
     }
     this.listeners.get(surfaceId)?.onStatus(status);
   }
@@ -417,7 +435,6 @@ export class CmuxMultiplexer implements Multiplexer {
 
   dispose(): void {
     this.disposed = true;
-    if (this.restartTimer) clearTimeout(this.restartTimer);
     this.proc?.kill();
     this.proc = null;
     this.listeners.clear();

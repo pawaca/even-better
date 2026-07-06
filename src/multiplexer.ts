@@ -57,6 +57,13 @@ export interface Multiplexer {
   /** OPTIONAL: backend classification of a blocked pane. herdr implements it;
    *  a backend without a classifier omits it and the caller reads the screen. */
   explain?(paneId: string): Promise<Explanation>;
+  /** OPTIONAL: the kind of interactive blocker currently open, when the backend
+   *  learns it from the event that opened it (cmux). Lets the caller render a
+   *  question as a question even if screen parsing is inconclusive. */
+  interactionKind?(paneId: string): "permission" | "question" | undefined;
+  /** OPTIONAL: release long-lived resources (e.g. cmux's event-stream child) on
+   *  process shutdown. Backends with none (herdr) omit it. */
+  dispose?(): void;
 }
 
 // ── active multiplexer selection ───────────────────────
