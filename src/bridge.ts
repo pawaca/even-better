@@ -663,9 +663,22 @@ export class PaneBridge {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
       if (this.state !== "awaiting") return true;
+      // The status stream can stay on `awaiting` after the keys land (cmux only
+      // leaves awaiting on a later hook like PreToolUse/Stop), so also confirm
+      // from the screen: no parseable menu means the response was accepted. The
+      // next hook drives state off awaiting through the normal onStatus path.
+      if (await this.menuGone()) return true;
       await new Promise((r) => setTimeout(r, 250));
     }
     return this.state !== "awaiting";
+  }
+
+  private async menuGone(): Promise<boolean> {
+    try {
+      return parseMenu(await getMux().read(this.paneId, 45)) === null;
+    } catch {
+      return false;
+    }
   }
 
   /** Press keys for a decision, verify the menu actually resolved, and walk a

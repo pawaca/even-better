@@ -30,8 +30,20 @@ const SAFE_METHODS = new Set([
 ]);
 
 /** True when herdr's socket is present — used for startup mux auto-selection. */
-export function herdrAvailable(): boolean {
-  return existsSync(SOCKET_PATH);
+export function herdrAvailable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    // A stale socket file can linger after herdr exits, so actually connect —
+    // a listening server accepts, a dead one refuses (ECONNREFUSED).
+    if (!existsSync(SOCKET_PATH)) return resolve(false);
+    const conn = net.connect(SOCKET_PATH);
+    const finish = (v: boolean): void => {
+      conn.destroy();
+      resolve(v);
+    };
+    conn.once("connect", () => finish(true));
+    conn.once("error", () => finish(false));
+    conn.setTimeout(1000, () => finish(false));
+  });
 }
 
 let seq = 0;

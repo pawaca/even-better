@@ -53,7 +53,7 @@ async function selectMux(): Promise<Multiplexer> {
     return process.exit(1);
   }
   const found: MuxChoice[] = [];
-  if (herdrAvailable()) found.push({ name: "herdr", make: () => new HerdrMultiplexer() });
+  if (await herdrAvailable()) found.push({ name: "herdr", make: () => new HerdrMultiplexer() });
   if (await cmuxAvailable()) found.push({ name: "cmux", make: () => new CmuxMultiplexer() });
   if (found.length <= 1) return (found[0]?.make ?? (() => new HerdrMultiplexer()))();
   if (!process.stdin.isTTY) {
