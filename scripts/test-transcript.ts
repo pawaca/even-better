@@ -1,4 +1,4 @@
-import { parseCodexEntry } from "../src/codex-transcript.js";
+import { CodexEntryParser, parseCodexEntry } from "../src/codex-transcript.js";
 import { parseEntry, summarizeTool } from "../src/transcript.js";
 
 const t = (name: string, got: unknown, want: unknown) => {
@@ -56,7 +56,30 @@ const codexResult = parseCodexEntry(JSON.stringify({
 }));
 t("codex-tool-result", [codexResult[0]?.t, (codexResult[0] as any)?.id, (codexResult[0] as any)?.output],
   ["toolResult", "call_1", "file1\nfile2"]);
+const codexCustomTool = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"custom_tool_call", call_id:"call_patch", name:"apply_patch", input:"*** Begin Patch\n*** End Patch\n"},
+}));
+t("codex-custom-tool", [codexCustomTool[0]?.t, (codexCustomTool[0] as any)?.id, (codexCustomTool[0] as any)?.name, (codexCustomTool[0] as any)?.input],
+  ["tool", "call_patch", "apply_patch", {input:"*** Begin Patch\n*** End Patch\n"}]);
+const codexCustomResult = parseCodexEntry(JSON.stringify({
+  type: "response_item",
+  payload: {type:"custom_tool_call_output", call_id:"call_patch", output:"Success"},
+}));
+t("codex-custom-tool-result", [codexCustomResult[0]?.t, (codexCustomResult[0] as any)?.id, (codexCustomResult[0] as any)?.output],
+  ["toolResult", "call_patch", "Success"]);
 t("codex-usage", parseCodexEntry(JSON.stringify({
   type: "event_msg",
   payload: {type:"token_count", info:{last_token_usage:{input_tokens:10, output_tokens:3}}},
 })), [{t:"usage", usage:{input:10, output:3}}]);
+const codexParser = new CodexEntryParser();
+const tokenCount = (input: number, output: number, lastInput = input, lastOutput = output) => JSON.stringify({
+  type: "event_msg",
+  payload: {type:"token_count", info:{
+    total_token_usage:{input_tokens:input, output_tokens:output},
+    last_token_usage:{input_tokens:lastInput, output_tokens:lastOutput},
+  }},
+});
+t("codex-usage-total-first", codexParser.parse(tokenCount(10, 3)), [{t:"usage", usage:{input:10, output:3}}]);
+t("codex-usage-total-dupe", codexParser.parse(tokenCount(10, 3)), []);
+t("codex-usage-total-delta", codexParser.parse(tokenCount(15, 4, 99, 99)), [{t:"usage", usage:{input:5, output:1}}]);

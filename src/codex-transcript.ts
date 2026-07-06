@@ -60,9 +60,12 @@ interface CodexPayload {
   call_id?: string;
   name?: string;
   arguments?: unknown;
+  input?: unknown;
   output?: unknown;
+  status?: string;
   info?: {
     last_token_usage?: CodexUsage;
+    total_token_usage?: CodexUsage;
   };
 }
 
@@ -96,6 +99,11 @@ function parseArguments(args: unknown): Record<string, unknown> {
   return args === undefined || args === null ? {} : { value: args };
 }
 
+function parseCustomInput(input: unknown): Record<string, unknown> {
+  if (isRecord(input)) return input;
+  return input === undefined || input === null ? {} : { input };
+}
+
 function outputText(output: unknown): string {
   if (typeof output === "string") return output;
   if (output === undefined || output === null) return "";
@@ -106,59 +114,104 @@ function outputText(output: unknown): string {
   }
 }
 
+function usageFrom(u: CodexUsage | undefined): { input: number; output: number } | null {
+  if (!u) return null;
+  return { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0 };
+}
+
+function usageKey(u: { input: number; output: number }): string {
+  return `${u.input}:${u.output}`;
+}
+
+export class CodexEntryParser {
+  private lastTotalUsage: { input: number; output: number } | null = null;
+  private lastUsageSnapshot = "";
+
+  parse(line: string): AgentEvent[] {
+    let entry: CodexEntry;
+    try {
+      entry = JSON.parse(line) as CodexEntry;
+    } catch {
+      return [];
+    }
+
+    const payload = entry.payload;
+    if (!payload) return [];
+
+    if (entry.type === "event_msg" && payload.type === "token_count") {
+      return this.parseUsage(payload);
+    }
+
+    if (entry.type !== "response_item") return [];
+
+    if (payload.type === "message") {
+      if (payload.role === "user") {
+        const text = contentText(payload.content, "input_text").trim();
+        if (!text || text.trimStart().startsWith("<")) return [];
+        return [{ t: "prompt", text }];
+      }
+      if (payload.role === "assistant") {
+        const text = contentText(payload.content, "output_text").trim();
+        return text ? [{ t: "say", text }] : [];
+      }
+      return [];
+    }
+
+    if (payload.type === "function_call") {
+      const id = payload.call_id ?? payload.id;
+      const name = payload.name;
+      if (!id || !name) return [];
+      return [{ t: "tool", id, name, input: parseArguments(payload.arguments) }];
+    }
+
+    if (payload.type === "custom_tool_call") {
+      const id = payload.call_id ?? payload.id;
+      const name = payload.name;
+      if (!id || !name) return [];
+      return [{ t: "tool", id, name, input: parseCustomInput(payload.input) }];
+    }
+
+    if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
+      const id = payload.call_id;
+      if (!id) return [];
+      return [{ t: "toolResult", id, output: outputText(payload.output), ok: payload.status !== "failed" }];
+    }
+
+    return [];
+  }
+
+  private parseUsage(payload: CodexPayload): AgentEvent[] {
+    const total = usageFrom(payload.info?.total_token_usage);
+    if (total) {
+      const prev = this.lastTotalUsage;
+      this.lastTotalUsage = total;
+      const delta = prev
+        ? { input: Math.max(0, total.input - prev.input), output: Math.max(0, total.output - prev.output) }
+        : usageFrom(payload.info?.last_token_usage);
+      if (!delta) return [];
+      if (delta.input === 0 && delta.output === 0) return [];
+      return [{ t: "usage", usage: delta }];
+    }
+
+    const last = usageFrom(payload.info?.last_token_usage);
+    if (!last) return [];
+    const key = usageKey(last);
+    if (key === this.lastUsageSnapshot) return [];
+    this.lastUsageSnapshot = key;
+    return [{ t: "usage", usage: last }];
+  }
+}
+
 export function parseCodexEntry(line: string): AgentEvent[] {
-  let entry: CodexEntry;
-  try {
-    entry = JSON.parse(line) as CodexEntry;
-  } catch {
-    return [];
-  }
-
-  const payload = entry.payload;
-  if (!payload) return [];
-
-  if (entry.type === "event_msg" && payload.type === "token_count") {
-    const u = payload.info?.last_token_usage;
-    if (!u) return [];
-    return [{ t: "usage", usage: { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0 } }];
-  }
-
-  if (entry.type !== "response_item") return [];
-
-  if (payload.type === "message") {
-    if (payload.role === "user") {
-      const text = contentText(payload.content, "input_text").trim();
-      if (!text || text.trimStart().startsWith("<")) return [];
-      return [{ t: "prompt", text }];
-    }
-    if (payload.role === "assistant") {
-      const text = contentText(payload.content, "output_text").trim();
-      return text ? [{ t: "say", text }] : [];
-    }
-    return [];
-  }
-
-  if (payload.type === "function_call") {
-    const id = payload.call_id ?? payload.id;
-    const name = payload.name;
-    if (!id || !name) return [];
-    return [{ t: "tool", id, name, input: parseArguments(payload.arguments) }];
-  }
-
-  if (payload.type === "function_call_output") {
-    const id = payload.call_id;
-    if (!id) return [];
-    return [{ t: "toolResult", id, output: outputText(payload.output), ok: true }];
-  }
-
-  return [];
+  return new CodexEntryParser().parse(line);
 }
 
 export class CodexTranscriptTimeline implements Timeline {
   private tail: JsonlTail;
+  private parser = new CodexEntryParser();
 
   constructor(filePath: string) {
-    this.tail = new JsonlTail(filePath, parseCodexEntry);
+    this.tail = new JsonlTail(filePath, (line) => this.parser.parse(line));
   }
 
   poll(): Promise<AgentEvent[]> {
