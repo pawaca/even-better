@@ -55,6 +55,7 @@ interface CodexContent {
 interface CodexPayload {
   type?: string;
   role?: string;
+  message?: unknown;
   content?: unknown;
   id?: string;
   call_id?: string;
@@ -70,9 +71,14 @@ interface CodexPayload {
 }
 
 interface CodexEntry {
+  timestamp?: string;
   type?: string;
   payload?: CodexPayload;
 }
+
+type MessageSource = "response_item" | "event_msg";
+
+const MESSAGE_DEDUPE_MS = 30_000;
 
 function contentText(content: unknown, type: "input_text" | "output_text"): string {
   if (!Array.isArray(content)) return "";
@@ -126,6 +132,7 @@ function usageKey(u: { input: number; output: number }): string {
 export class CodexEntryParser {
   private lastTotalUsage: { input: number; output: number } | null = null;
   private lastUsageSnapshot = "";
+  private recentMessages = new Map<string, { at: number; source: MessageSource }>();
 
   parse(line: string): AgentEvent[] {
     let entry: CodexEntry;
@@ -138,21 +145,25 @@ export class CodexEntryParser {
     const payload = entry.payload;
     if (!payload) return [];
 
-    if (entry.type === "event_msg" && payload.type === "token_count") {
-      return this.parseUsage(payload);
+    if (entry.type === "event_msg") {
+      if (payload.type === "token_count") return this.parseUsage(payload);
+      if (payload.type === "user_message") {
+        return this.parseChatMessage("user", outputText(payload.message), "event_msg", entry);
+      }
+      if (payload.type === "agent_message") {
+        return this.parseChatMessage("assistant", outputText(payload.message), "event_msg", entry);
+      }
+      return [];
     }
 
     if (entry.type !== "response_item") return [];
 
     if (payload.type === "message") {
       if (payload.role === "user") {
-        const text = contentText(payload.content, "input_text").trim();
-        if (!text || text.trimStart().startsWith("<")) return [];
-        return [{ t: "prompt", text }];
+        return this.parseChatMessage("user", contentText(payload.content, "input_text"), "response_item", entry);
       }
       if (payload.role === "assistant") {
-        const text = contentText(payload.content, "output_text").trim();
-        return text ? [{ t: "say", text }] : [];
+        return this.parseChatMessage("assistant", contentText(payload.content, "output_text"), "response_item", entry);
       }
       return [];
     }
@@ -178,6 +189,36 @@ export class CodexEntryParser {
     }
 
     return [];
+  }
+
+  private parseChatMessage(
+    role: "user" | "assistant",
+    raw: string,
+    source: MessageSource,
+    entry: CodexEntry,
+  ): AgentEvent[] {
+    const text = raw.trim();
+    if (!text || (role === "user" && text.trimStart().startsWith("<"))) return [];
+    if (this.isDuplicateMessage(role, text, source, entry)) return [];
+    return role === "user" ? [{ t: "prompt", text }] : [{ t: "say", text }];
+  }
+
+  private isDuplicateMessage(
+    role: "user" | "assistant",
+    text: string,
+    source: MessageSource,
+    entry: CodexEntry,
+  ): boolean {
+    const at = entry.timestamp ? Date.parse(entry.timestamp) : Date.now();
+    const now = Number.isFinite(at) ? at : Date.now();
+    const key = `${role}:${text}`;
+    const prev = this.recentMessages.get(key);
+    this.recentMessages.set(key, { at: now, source });
+    if (this.recentMessages.size > 200) {
+      const cutoff = now - MESSAGE_DEDUPE_MS;
+      for (const [k, v] of this.recentMessages) if (v.at < cutoff) this.recentMessages.delete(k);
+    }
+    return prev !== undefined && prev.source !== source && Math.abs(now - prev.at) <= MESSAGE_DEDUPE_MS;
   }
 
   private parseUsage(payload: CodexPayload): AgentEvent[] {

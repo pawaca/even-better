@@ -44,6 +44,30 @@ t("codex-assistant", parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"message", role:"assistant", content:[{type:"output_text", text:"我会先读代码。"}]},
 })), [{t:"say", text:"我会先读代码。"}]);
+t("codex-event-user", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"user_message", message:"从 event_msg 来的用户消息"},
+})), [{t:"prompt", text:"从 event_msg 来的用户消息"}]);
+t("codex-event-agent", parseCodexEntry(JSON.stringify({
+  type: "event_msg",
+  payload: {type:"agent_message", message:"从 event_msg 来的助手消息"},
+})), [{t:"say", text:"从 event_msg 来的助手消息"}]);
+const codexMessageDedupe = new CodexEntryParser();
+const responseMessage = JSON.stringify({
+  timestamp: "2026-07-06T00:00:00.000Z",
+  type: "response_item",
+  payload: {type:"message", role:"assistant", content:[{type:"output_text", text:"同一条助手消息"}]},
+});
+const eventMessage = JSON.stringify({
+  timestamp: "2026-07-06T00:00:00.010Z",
+  type: "event_msg",
+  payload: {type:"agent_message", message:"同一条助手消息"},
+});
+t("codex-event-dedup-response-first", [codexMessageDedupe.parse(responseMessage), codexMessageDedupe.parse(eventMessage)],
+  [[{t:"say", text:"同一条助手消息"}], []]);
+const codexMessageDedupeReverse = new CodexEntryParser();
+t("codex-event-dedup-event-first", [codexMessageDedupeReverse.parse(eventMessage), codexMessageDedupeReverse.parse(responseMessage)],
+  [[{t:"say", text:"同一条助手消息"}], []]);
 const codexTool = parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"function_call", call_id:"call_1", name:"exec_command", arguments:JSON.stringify({cmd:"ls", workdir:"/tmp"})},

@@ -340,6 +340,9 @@ export class PaneBridge {
         return;
       }
       case "usage": {
+        // Producers emit usage as turn-local deltas. Provider-specific
+        // cumulative snapshots and duplicate samples must be normalized before
+        // they reach the bridge, so the core can just sum the spine event.
         this.turnInputTokens += e.usage.input;
         this.turnOutputTokens += e.usage.output;
         return;
