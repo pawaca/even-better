@@ -341,9 +341,21 @@ export class CmuxMultiplexer implements Multiplexer {
         this.refreshMaps();
         return;
       case "agent.hook.UserPromptSubmit":
-      case "agent.hook.PreToolUse":
         this.routeAgent(payload, "busy");
         return;
+      case "agent.hook.PreToolUse": {
+        // A few tools block on a menu without a dedicated hook: ExitPlanMode
+        // (plan approval) has no distinct event, and on some builds
+        // AskUserQuestion arrives only here. Route those to the interaction path
+        // so the glasses can answer; every other tool is ordinary work.
+        const tool = typeof payload.tool_name === "string" ? payload.tool_name : "";
+        if (tool === "AskUserQuestion" || tool === "ExitPlanMode") {
+          this.routeInteraction(payload, "question");
+        } else {
+          this.routeAgent(payload, "busy");
+        }
+        return;
+      }
       case "agent.hook.Stop":
         this.routeAgent(payload, "idle");
         return;
