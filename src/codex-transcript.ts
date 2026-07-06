@@ -168,11 +168,20 @@ function toolSearchOutput(tools: unknown): string {
   return `Found ${count} tools: ${shown.join(", ")}${suffix}`;
 }
 
+function webSearchIsRunning(status: string | undefined): boolean {
+  return status === "searching" || status === "in_progress" || status === "pending";
+}
+
+interface WebSearchState {
+  started: boolean;
+  completed: boolean;
+}
+
 export class CodexEntryParser {
   private lastTotalUsage: { input: number; output: number } | null = null;
   private lastUsageSnapshot = "";
   private recentMessages = new Map<string, { at: number; source: MessageSource }>();
-  private completedWebSearches = new Set<string>();
+  private webSearches = new Map<string, WebSearchState>();
 
   parse(line: string): AgentEvent[] {
     let entry: CodexEntry;
@@ -260,22 +269,28 @@ export class CodexEntryParser {
 
   private parseWebSearch(payload: CodexPayload): AgentEvent[] {
     const id = payload.call_id ?? payload.id;
-    if (!id || !this.rememberWebSearch(id)) return [];
+    if (!id) return [];
+    const prev = this.webSearches.get(id);
+    if (prev?.completed) return [];
+
     const input = parseWebSearchInput(payload);
-    return [
-      { t: "tool", id, name: "WebSearch", input },
-      { t: "toolResult", id, output: webSearchOutput(input), ok: payload.status !== "failed" },
-    ];
+    const terminal = payload.type === "web_search_end" || !webSearchIsRunning(payload.status);
+    const events: AgentEvent[] = [];
+
+    if (!prev?.started) events.push({ t: "tool", id, name: "WebSearch", input });
+    this.rememberWebSearch(id, { started: true, completed: terminal });
+    if (terminal) {
+      events.push({ t: "toolResult", id, output: webSearchOutput(input), ok: payload.status !== "failed" });
+    }
+    return events;
   }
 
-  private rememberWebSearch(id: string): boolean {
-    if (this.completedWebSearches.has(id)) return false;
-    this.completedWebSearches.add(id);
-    if (this.completedWebSearches.size > 500) {
-      const first = this.completedWebSearches.values().next().value;
-      if (typeof first === "string") this.completedWebSearches.delete(first);
+  private rememberWebSearch(id: string, state: WebSearchState): void {
+    this.webSearches.set(id, state);
+    if (this.webSearches.size > 500) {
+      const first = this.webSearches.keys().next().value;
+      if (typeof first === "string") this.webSearches.delete(first);
     }
-    return true;
   }
 
   private parseChatMessage(

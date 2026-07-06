@@ -130,6 +130,22 @@ t("codex-web-search-end-dedup", [codexWebSearchDedupe.parse(webSearchEnd), codex
   ],
   [],
 ]);
+const codexWebSearchProgress = new CodexEntryParser();
+const webSearchProgressStart = JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_3", status:"searching", action:{type:"search", query:"codex rollout"}},
+});
+const webSearchProgressDone = JSON.stringify({
+  type: "response_item",
+  payload: {type:"web_search_call", id:"ws_3", status:"completed", action:{type:"search", query:"codex rollout"}},
+});
+t("codex-web-search-progress", [
+  codexWebSearchProgress.parse(webSearchProgressStart),
+  codexWebSearchProgress.parse(webSearchProgressDone),
+], [
+  [{t:"tool", id:"ws_3", name:"WebSearch", input:{type:"search", query:"codex rollout"}}],
+  [{t:"toolResult", id:"ws_3", output:"Searched codex rollout", ok:true}],
+]);
 const codexToolSearch = parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"tool_search_call", call_id:"call_tools", status:"completed", arguments:{query:"github pull request", limit:8}},
