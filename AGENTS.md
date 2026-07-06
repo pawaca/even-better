@@ -29,7 +29,15 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   here and nowhere else.
 - **`render.ts`** — pure `string→string` glasses transforms (table reflow, box
   strip). Applied before emit.
-- **`herdr.ts`** — the multiplexer socket client (RPC + subscribe).
+- **`multiplexer.ts`** — the `Multiplexer` seam (pane I/O) + normalized
+  `PaneStatus`. `index.ts` picks one backend at boot (`MUX` env, else auto) and
+  everything reads it via `getMux()`. Status is normalized here so the bridge's
+  turn machine is backend-agnostic; `explain()` is an optional capability.
+- **`herdr.ts`** — the herdr socket client (RPC + subscribe) + `HerdrMultiplexer`.
+- **`cmux.ts`** — `CmuxMultiplexer`: drives the `cmux` CLI. Session ids come from
+  cmux's agent *hooks* (`~/.cmuxterm/<agent>-hook-sessions.json` + `surface
+  resume get`); status from one shared `cmux events` stream routed per surface.
+  No classifier ⇒ no `explain()`; blocked menus fall back to screen parsing.
 - **`output-stream.ts`** — `OutputStream`: paces text out a few code points per
   tick (smooth typing) and interleaves whole events (tool_start) in order.
 - **`bridge.ts`** — `PaneBridge`: the core. Turn lifecycle, token accounting,
@@ -126,9 +134,11 @@ glasses show something wrong. `DEBUG_STREAM=1` traces capture/send/drop per line
 
 ## Extension roadmap — what NOT to build yet
 
-`docs/ARCHITECTURE.md` defines `Multiplexer` and `AgentAdapter` interfaces for
-cmux and codex. **Do not extract them until that work actually starts** — the bar
-for a new abstraction is a named second implementation, not symmetry. No
+`Multiplexer` is now extracted (`multiplexer.ts` + `herdr.ts`/`cmux.ts`) — its
+bar was met by a named second backend. `AgentAdapter` is **not** yet: claude and
+codex still live as branches in `bridge.ts`/transcript parsers, and that is
+fine until agent-specific behavior grows beyond timeline parsing and menu/key
+grammar. Do not extract it (or the `src/source/` subtree) on symmetry alone. No
 `Renderer`/`Transport` interfaces while there is one device and one protocol;
 keep render as pure functions.
 

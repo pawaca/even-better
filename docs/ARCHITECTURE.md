@@ -212,8 +212,13 @@ Build in this order; stop wherever the value stops paying for the churn:
 2. **Done — the render transforms (`reflowTables` first).** The only change with
    *immediate user-visible* payoff: tables become readable on the glasses.
    Pure functions; no new interface needed.
-3. **Defer — extract `Multiplexer` when cmux work starts.** Mechanical; do it
-   the day you touch cmux, not before.
+3. **Done — extracted `Multiplexer` when cmux work started.** `src/multiplexer.ts`
+   defines the interface + normalized `PaneStatus`; `HerdrMultiplexer` (in
+   `herdr.ts`) and `CmuxMultiplexer` (`cmux.ts`) implement it; `index.ts` selects
+   one at boot (`MUX` env, else auto). Kept flat at `src/` (matching today's
+   layout), not the `src/source/` subtree — that reshuffle is part of step 4+.
+   cmux has no pane classifier, so it omits the optional `explain()` and blocked
+   menus fall back to screen parsing, exactly as this seam anticipated.
 4. **Defer — extract `AgentAdapter` only when agent-specific behavior grows
    beyond timeline parsing and menu/key grammar.** Claude and Codex transcript
    producers exist today, but the full adapter interface is still not worth the

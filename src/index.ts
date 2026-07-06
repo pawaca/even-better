@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -14,13 +15,59 @@ import {
   refreshAgents,
 } from "./bridge.js";
 import { emit, getMessages, sseHandler } from "./sse.js";
-import { paneRead } from "./herdr.js";
+import { getMux, setMux, type Multiplexer } from "./multiplexer.js";
+import { HerdrMultiplexer, herdrAvailable } from "./herdr.js";
+import { CmuxMultiplexer, cmuxAvailable } from "./cmux.js";
 import { logEvent, eventLogPath } from "./log.js";
 import { extractModel } from "./parse.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
 
 const VERSION = "0.1.0";
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
+
+// Pick the multiplexer once, before anything touches it. MUX=cmux|herdr forces
+// it. Otherwise: use whichever backend is present; if BOTH are, never guess —
+// prompt on a TTY, and fail fast without one (so nothing silently mirrors the
+// wrong terminal). A missing backend surfaces later as NOT REACHABLE.
+type MuxChoice = { name: string; make: () => Multiplexer };
+
+function promptMux(found: MuxChoice[]): Promise<Multiplexer> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const list = found.map((f, i) => `  ${i + 1}) ${f.name}`).join("\n");
+  return new Promise((resolve) => {
+    rl.question(`\nMultiple multiplexers detected. Choose one:\n${list}\n> `, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      const chosen = found[Number(a) - 1] ?? found.find((f) => f.name === a) ?? found[0];
+      resolve(chosen.make());
+    });
+  });
+}
+
+async function selectMux(): Promise<Multiplexer> {
+  const pick = (process.env.MUX ?? "").toLowerCase();
+  if (pick === "herdr") return new HerdrMultiplexer();
+  if (pick === "cmux") return new CmuxMultiplexer();
+  if (pick) {
+    console.error(`error: unknown MUX "${pick}". Use: herdr, cmux.`);
+    return process.exit(1);
+  }
+  const found: MuxChoice[] = [];
+  if (herdrAvailable()) found.push({ name: "herdr", make: () => new HerdrMultiplexer() });
+  if (cmuxAvailable()) found.push({ name: "cmux", make: () => new CmuxMultiplexer() });
+  if (found.length <= 1) return (found[0]?.make ?? (() => new HerdrMultiplexer()))();
+  if (!process.stdin.isTTY) {
+    const names = found.map((f) => f.name);
+    console.error(
+      `error: multiple multiplexers detected (${names.join(", ")}) and no TTY to prompt. ` +
+        `Set MUX=${names.join("|")} to choose.`,
+    );
+    return process.exit(1);
+  }
+  return promptMux(found);
+}
+
+setMux(await selectMux());
 
 // The bearer token. Priority: BRIDGE_TOKEN env → a token persisted under
 // ~/.config/even-better/token (generated once, reused across restarts so you
@@ -116,12 +163,12 @@ api.get("/sessions", async (_req, res) => {
   try {
     const agents = await refreshAgents();
     const sessions = agents.map((a) => ({
-      id: a.pane_id,
+      id: a.paneId,
       title: `${a.agent} · ${path.basename(a.cwd || "/")}`,
       timestamp: new Date().toISOString(),
       cwd: a.cwd,
       provider: providerForAgent(a.agent),
-      status: getBridge(a.pane_id)?.state ?? "idle",
+      status: getBridge(a.paneId)?.state ?? "idle",
     }));
     res.json({ sessions });
   } catch (err) {
@@ -137,7 +184,7 @@ api.get("/info", async (_req, res) => {
     const target = agents.find((a) => a.focused) ?? agents[0];
     provider = providerForAgent(target?.agent);
     if (target?.agent === "claude") {
-      const text = await paneRead(target.pane_id, "visible", 5);
+      const text = await getMux().read(target.paneId, 5);
       model = extractModel(text);
     }
   } catch {
@@ -175,7 +222,7 @@ api.post("/prompt", async (req, res) => {
       bridge = focusedOrFirstBridge(agents);
     }
     if (!bridge) {
-      res.status(404).json({ error: "No agent pane found in herdr" });
+      res.status(404).json({ error: "No agent pane found" });
       return;
     }
     console.log(`[prompt] pane=${bridge.paneId} text=${text.slice(0, 80)}`);
@@ -355,6 +402,7 @@ const access = resolveAccess();
 const server = app.listen(PORT, access.bindHost, async () => {
   console.log("");
   console.log(`  even-better v${VERSION}`);
+  console.log(`  Mux   : ${getMux().name}`);
   console.log(`  Access: ${access.label}`);
   if (access.tunnel) console.log(`  Local : http://127.0.0.1:${PORT}  (public URL below)`);
   console.log(`  Token : ${TOKEN}`);
@@ -367,13 +415,13 @@ const server = app.listen(PORT, access.bindHost, async () => {
       defaultProvider = providerForAgent(target?.agent);
     }
     for (const a of agents) {
-      console.log(`  agent : ${a.agent} pane=${a.pane_id} status=${a.agent_status} cwd=${a.cwd}`);
+      console.log(`  agent : ${a.agent} pane=${a.paneId} status=${a.status} cwd=${a.cwd}`);
     }
     if (agents.length === 0) {
-      console.log("  agent : (none detected — start claude/codex inside herdr)");
+      console.log(`  agent : (none detected — start claude/codex inside ${getMux().name})`);
     }
   } catch (err) {
-    console.error(`  herdr : NOT REACHABLE — ${(err as Error).message}`);
+    console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
   }
 
   if (access.tunnel) {

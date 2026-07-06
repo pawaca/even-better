@@ -1,16 +1,11 @@
 import {
-  agentExplain,
-  agentList,
-  paneRead,
-  paneExists,
-  paneSessionId,
-  sendInput,
-  subscribe,
+  getMux,
   typeAndSubmit,
-  type AgentExplain,
-  type AgentInfo,
-  type SubscribeHandle,
-} from "./herdr.js";
+  type Explanation,
+  type PaneInfo,
+  type PaneStatus,
+  type StatusSub,
+} from "./multiplexer.js";
 import { emit } from "./sse.js";
 import { logEvent } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
@@ -94,22 +89,17 @@ function isPlanTool(name: string): boolean {
 
 export type AppState = "idle" | "busy" | "awaiting";
 
-function mapStatus(s: AgentInfo["agent_status"]): AppState {
-  switch (s) {
-    case "working":
-      return "busy";
-    case "blocked":
-      return "awaiting";
-    default:
-      return "idle";
-  }
+/** Normalized status → the bridge's turn-state view. `closed` is handled as a
+ *  disposal signal by onStatus, never stored as an AppState. */
+function toAppState(s: PaneStatus): AppState {
+  return s === "busy" ? "busy" : s === "awaiting" ? "awaiting" : "idle";
 }
 
 /**
- * PaneBridge mirrors one herdr agent pane as an even-terminal "session":
- * subscribes to output/status events, diffs new output into text_delta
+ * PaneBridge mirrors one agent pane (from any Multiplexer) as an even-terminal
+ * "session": watches normalized status, diffs new output into text_delta
  * messages, turns blocked screens into permission_request/user_question, and
- * injects prompts/decisions back via pane.send_input.
+ * injects prompts/decisions back through the Multiplexer.
  */
 export class PaneBridge {
   readonly paneId: string;
@@ -118,7 +108,7 @@ export class PaneBridge {
   agentSessionId: string | undefined;
   state: AppState = "idle";
 
-  private sub: SubscribeHandle | null = null;
+  private sub: StatusSub | null = null;
   // The active event source. `timeline` is what the poll loop drives; `screen`
   // aliases it only when it is a ScreenTimeline (for noteTyped/resetTurn).
   private timeline: Timeline | null = null;
@@ -147,12 +137,12 @@ export class PaneBridge {
   // order. Widgets bypass it; result/idle wait for it to drain.
   private readonly out = new OutputStream((msg) => emit(this.paneId, msg));
 
-  constructor(info: AgentInfo) {
-    this.paneId = info.pane_id;
+  constructor(info: PaneInfo) {
+    this.paneId = info.paneId;
     this.agent = info.agent;
     this.cwd = info.cwd;
-    this.agentSessionId = info.agent_session?.value;
-    this.state = mapStatus(info.agent_status);
+    this.agentSessionId = info.sessionId;
+    this.state = toAppState(info.status);
   }
 
   get provider(): string {
@@ -165,13 +155,10 @@ export class PaneBridge {
 
   private async connect(): Promise<void> {
     if (this.disposed) return;
-    this.sub = subscribe(
-      [
-        { type: "pane.agent_status_changed", pane_id: this.paneId },
-        { type: "pane.closed", pane_id: this.paneId },
-      ],
-      (event, data) => this.onHerdrEvent(event, data),
-      () => this.onSubClosed(),
+    this.sub = getMux().watchStatus(
+      this.paneId,
+      (s) => this.onStatus(s),
+      (err) => this.onSubClosed(err),
     );
     // A pane can already be blocked when the bridge discovers it (e.g. trust
     // dialog on startup) — no transition event will fire, so emit the menu now.
@@ -237,7 +224,8 @@ export class PaneBridge {
         this.clearProbe();
         return;
       }
-      void paneSessionId(this.paneId)
+      void getMux()
+        .sessionId(this.paneId)
         .then((id) => {
           if (!id || this.onTranscript) return;
           if (this.upgradeToTranscript(id)) this.clearProbe();
@@ -307,7 +295,7 @@ export class PaneBridge {
   /** Read the pane's visible screen — the one source that carries everything
    *  the user sees, including streaming prose (see POLL_INTERVAL_MS note). */
   private async readPane(): Promise<string> {
-    return paneRead(this.paneId, "visible", OUTPUT_WINDOW_LINES);
+    return getMux().read(this.paneId, OUTPUT_WINDOW_LINES);
   }
 
   /** Map one provider-neutral AgentEvent to the app wire protocol. Provider-,
@@ -406,38 +394,29 @@ export class PaneBridge {
     }
   }
 
-  private onSubClosed(): void {
+  private onSubClosed(_err?: Error): void {
     this.sub = null;
     if (this.disposed) return;
-    // herdr may have restarted; retry while the pane still exists.
+    // The status stream dropped (mux restarted); retry while the pane still exists.
     setTimeout(() => {
-      void paneExists(this.paneId).then((exists) => {
-        if (exists) this.connect();
-        else this.dispose();
-      });
+      void getMux()
+        .exists(this.paneId)
+        .then((exists) => {
+          if (exists) this.connect();
+          else this.dispose();
+        });
     }, 2000);
-  }
-
-  private onHerdrEvent(event: string, data: Record<string, unknown>): void {
-    if (event === "pane.closed") {
-      this.dispose();
-      return;
-    }
-    if (event === "pane.agent_status_changed") {
-      const raw =
-        (data.state as string | undefined) ??
-        (data.agent_status as string | undefined) ??
-        "unknown";
-      this.onStatus(raw);
-      return;
-    }
   }
 
   // ── status transitions ───────────────────────────────
 
-  private onStatus(raw: string): void {
-    const next = mapStatus(raw as AgentInfo["agent_status"]);
-    console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (herdr: ${raw})`);
+  private onStatus(raw: PaneStatus): void {
+    if (raw === "closed") {
+      this.dispose();
+      return;
+    }
+    const next = toAppState(raw);
+    console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (mux: ${raw})`);
 
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
@@ -503,17 +482,22 @@ export class PaneBridge {
     //  - herdr agent.explain → which detection rule fired (menu TYPE)
     //  - transcript pendingTools → which tool is awaiting approval (CONTENT)
     //  - screen parse → the option labels/digits (CHOICES)
+    const mux = getMux();
     let screen = "";
     try {
-      screen = await paneRead(this.paneId, "visible", 45);
+      screen = await mux.read(this.paneId, 45);
     } catch {
       return;
     }
-    let explain: AgentExplain = {};
-    try {
-      explain = await agentExplain(this.paneId);
-    } catch {
-      // explain unavailable — fall back to screen classification alone
+    // agent.explain is an optional Multiplexer capability (herdr only). Without
+    // it (cmux), fall back to screen classification alone.
+    let explain: Explanation = {};
+    if (mux.explain) {
+      try {
+        explain = await mux.explain(this.paneId);
+      } catch {
+        // explain unavailable — fall back to screen classification alone
+      }
     }
     const menu = parseMenu(screen);
     const classified = menu ? classifyMenu(menu) : null;
@@ -663,7 +647,7 @@ export class PaneBridge {
     this.recentTyped = text.replace(/\s+/g, "");
     this.recentTypedAt = Date.now();
     this.screen?.noteTyped(text);
-    await typeAndSubmit(this.paneId, text);
+    await typeAndSubmit(getMux(), this.paneId, text);
     // Optimistically enter the turn for immediate feedback — herdr's status
     // event would otherwise see state==busy and skip the turn-start work.
     if (this.state !== "busy") this.enterBusyTurn();
@@ -695,7 +679,7 @@ export class PaneBridge {
       try {
         for (let i = 0; i < a.steps.length; i++) {
           const step = a.steps[i];
-          await sendInput(this.paneId, step.text ?? "", step.keys);
+          await getMux().send(this.paneId, step.text ?? "", step.keys);
           if (i < a.steps.length - 1) await new Promise((r) => setTimeout(r, 250));
         }
       } catch {
@@ -801,7 +785,7 @@ export class PaneBridge {
   }
 
   async interrupt(): Promise<void> {
-    await sendInput(this.paneId, "", ["Escape"]);
+    await getMux().send(this.paneId, "", ["Escape"]);
   }
 
   dispose(): void {
@@ -822,24 +806,24 @@ export class PaneBridge {
 
 const bridges = new Map<string, PaneBridge>();
 
-/** Reconcile bridges with herdr's current agent list; returns the list. */
-export async function refreshAgents(): Promise<AgentInfo[]> {
-  const agents = await agentList();
+/** Reconcile bridges with the multiplexer's current pane list; returns the list. */
+export async function refreshAgents(): Promise<PaneInfo[]> {
+  const agents = await getMux().listPanes();
   const seen = new Set<string>();
   for (const info of agents) {
-    seen.add(info.pane_id);
-    const existing = bridges.get(info.pane_id);
+    seen.add(info.paneId);
+    const existing = bridges.get(info.paneId);
     if (existing) {
       existing.agent = info.agent;
       existing.cwd = info.cwd;
       // the agent session may only become known after the first prompt —
       // pick up the transcript as soon as the id appears
-      if (info.agent_session?.value) existing.noteSessionId(info.agent_session.value);
+      if (info.sessionId) existing.noteSessionId(info.sessionId);
     } else {
       const b = new PaneBridge(info);
-      bridges.set(info.pane_id, b);
+      bridges.set(info.paneId, b);
       b.start();
-      console.log(`[bridge] tracking ${info.agent} pane ${info.pane_id} (${info.cwd})`);
+      console.log(`[bridge] tracking ${info.agent} pane ${info.paneId} (${info.cwd})`);
     }
   }
   for (const [paneId, b] of bridges) {
@@ -862,10 +846,10 @@ export async function getOrCreateBridge(paneId: string): Promise<PaneBridge | un
   return bridges.get(paneId);
 }
 
-export function focusedOrFirstBridge(agents: AgentInfo[]): PaneBridge | undefined {
+export function focusedOrFirstBridge(agents: PaneInfo[]): PaneBridge | undefined {
   const focused = agents.find((a) => a.focused);
   const target = focused ?? agents[0];
-  return target ? bridges.get(target.pane_id) : undefined;
+  return target ? bridges.get(target.paneId) : undefined;
 }
 
 export function disposeAll(): void {
