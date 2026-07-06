@@ -37,17 +37,18 @@ not log entries).
 type AgentEvent =                                    // the timeline
   | { t: "prompt";     text: string }                // a user turn (typed anywhere)
   | { t: "say";        text: string; usage?: Usage } // assistant prose
-  | { t: "think";      text: string }                // reasoning (render-optional)
   | { t: "tool";       id: string; name: string; input: JsonObject }
-  | { t: "toolResult"; id: string; output: string; ok: boolean };
+  | { t: "toolResult"; id: string; output: string; ok: boolean }
+  | { t: "usage";      usage: Usage }                // standalone token delta
+  | { t: "turnEnd";    success: boolean; text?: string };
 
 type Signal =                                        // the control channel
   | { t: "state";       state: "busy" | "idle" | "blocked" }
   | { t: "interaction"; req: Interaction };          // awaits a respond()
 ```
 
-Why this is the center: a `say` is a `say` whether it came from Claude's jsonl
-or codex's session log or a scraped screen. The moment events are in this shape,
+Why this is the center: a `say` is a `say` whether it came from Claude's jsonl,
+Codex's rollout log, or a scraped screen. The moment events are in this shape,
 nothing downstream needs to know the provider. Turn tracking, token totals,
 rendering, the app protocol — all speak only this.
 
@@ -79,7 +80,7 @@ interface Multiplexer {                 // pane I/O — herdr today, cmux next
   explain?(paneId: string): Promise<Explanation>;   // OPTIONAL capability
 }
 
-interface AgentAdapter {                // interpret one agent — claude today, codex next
+interface AgentAdapter {                // interpret one agent — claude/codex mappings exist today
   readonly kind: string;
   timeline(sessionId: string, mux: Multiplexer, paneId: string): Timeline;
   readInteraction(ctx: BlockContext): Interaction | null;   // what is the menu
@@ -100,14 +101,15 @@ Three deliberate choices here:
    to what every backend can do.
 
 3. **The best idea in the whole design: `Timeline` unifies jsonl and screen.**
-   Both "tail the jsonl" and "scrape the TUI" are implementations of *produce
-   `AgentEvent`s*:
+   Both "tail the jsonl/rollout" and "scrape the TUI" are implementations of
+   *produce `AgentEvent`s*:
 
    ```ts
    interface Timeline { poll(): Promise<AgentEvent[]>; dispose(): void; }
-   //   TranscriptTimeline  — Claude jsonl: structured, lossless, no heuristics
-   //   ScreenTimeline      — any agent via mux.read(): the diff + volatile-filter
-   //                         + dedup pipeline, used only when no structured log exists
+   //   TranscriptTimeline       — Claude jsonl: structured, lossless, no heuristics
+   //   CodexTranscriptTimeline  — Codex rollout jsonl: structured, lossless, no screen heuristics
+   //   ScreenTimeline           — any agent via mux.read(): the diff + volatile-filter
+   //                              + dedup pipeline, used only when no structured log exists
    ```
 
    This demotes screen-scraping from "the mechanism" to "the fallback Timeline,"
@@ -186,9 +188,9 @@ src/
     cmux.ts             # later
     agent.ts            # AgentAdapter interface
     claude.ts           # ClaudeAdapter + menu grammar (from bridge.ts + parse.ts)
-    codex.ts            # later
+    codex.ts            # CodexAdapter + rollout mapping (from codex-transcript.ts)
     timeline/
-      transcript.ts     # TranscriptTimeline          (from today's transcript.ts)
+      transcript.ts     # TranscriptTimeline + CodexTranscriptTimeline
       screen.ts         # ScreenTimeline: diff+filter+dedup (from parse.ts+bridge.ts)
   sink/
     index.ts            # Sink: even-terminal SSE + ring buffer (from sse.ts+index.ts)
@@ -204,15 +206,19 @@ Held to "would a senior engineer call this over-built?", most of this should be
 deferred until the second implementation that justifies it actually arrives.
 Build in this order; stop wherever the value stops paying for the churn:
 
-1. **Now — define the spine + the `Timeline` seam.** Highest leverage, least
-   code. Promote `TranscriptEvent` to `AgentEvent`; wrap both jsonl and screen
-   as `Timeline`s. This alone lifts every heuristic out of the core.
-2. **Now — the render transforms (`reflowTables` first).** The only change with
-   *immediate user-visible* payoff — tables become readable on the glasses.
+1. **Done — define the spine + the `Timeline` seam.** Highest leverage, least
+   code. Claude jsonl, Codex rollout jsonl, and screen scraping all produce
+   `AgentEvent`s. This lifts screen heuristics out of the core.
+2. **Done — the render transforms (`reflowTables` first).** The only change with
+   *immediate user-visible* payoff: tables become readable on the glasses.
    Pure functions; no new interface needed.
-3. **When cmux work starts — extract `Multiplexer`.** Mechanical; do it the day
-   you touch cmux, not before.
-4. **When codex work starts — extract `AgentAdapter`.** Same rule.
+3. **Defer — extract `Multiplexer` when cmux work starts.** Mechanical; do it
+   the day you touch cmux, not before.
+4. **Defer — extract `AgentAdapter` only when agent-specific behavior grows
+   beyond timeline parsing and menu/key grammar.** Claude and Codex transcript
+   producers exist today, but the full adapter interface is still not worth the
+   churn while herdr is the only multiplexer and menus are still handled in the
+   bridge.
 5. **Probably never — `Renderer`/`Transport` interfaces.** Only if a second
    device or app protocol appears. The transforms being pure is enough until
    then.
