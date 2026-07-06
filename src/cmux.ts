@@ -414,8 +414,12 @@ export class CmuxMultiplexer implements Multiplexer {
     } catch {
       return undefined;
     }
-    if (!isRecord(parsed) || !isRecord(parsed.resume_binding)) return undefined;
-    const b = parsed.resume_binding;
+    if (!isRecord(parsed)) return undefined;
+    // The binding fields (kind, checkpoint_id) sit under `resume_binding` on the
+    // cmux build verified here, but upstream has exposed them at the top level
+    // too — accept either so a version skew doesn't strand the pane on screen
+    // scraping (cmux/cmux#6285).
+    const b = isRecord(parsed.resume_binding) ? parsed.resume_binding : parsed;
     const kind = typeof b.kind === "string" ? b.kind : "";
     if (kind !== "claude" && kind !== "codex") return undefined;
     return typeof b.checkpoint_id === "string" ? bareSession(b.checkpoint_id) : undefined;
