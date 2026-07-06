@@ -74,7 +74,9 @@ Environment variables:
 | `PORT` | `3456` | HTTP port (encoded into the QR) |
 | `BRIDGE_TOKEN` | random | Bearer token (encoded into the QR) |
 | `ACCESS` | `lan` | How the phone reaches the bridge — sets both the bind and the single QR: `lan` (same Wi-Fi), `local` (same machine), `tailscale`, `tailscale-funnel` (or `funnel`), `pinggy`, `bore`, `ngrok`, `cloudflared`, or a literal IP |
+| `MUX` | auto | Multiplexer backend: `herdr` or `cmux`. Unset: uses whichever one is present; if both are, prompts on a TTY and errors without one (set this to choose) |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr API socket |
+| `CMUX_BIN` | app bundle / `cmux` on PATH | cmux CLI used when `MUX=cmux`. cmux mirrors agents whose session ids it captured via `cmux hooks setup --agent claude\|codex` |
 | `CODEX_HOME` | `~/.codex` | Codex home used to find rollout transcripts |
 | `DEFAULT_PROVIDER` | focused herdr agent | Provider hint encoded in the QR; it does not spawn or switch the underlying agent |
 | `EVENT_LOG` | `/tmp/even-better-events.log` | JSONL log of app requests, SSE events, and diagnostics |

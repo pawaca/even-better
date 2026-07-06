@@ -1,6 +1,14 @@
 import net from "node:net";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type {
+  Explanation,
+  Multiplexer,
+  PaneInfo,
+  PaneStatus,
+  StatusSub,
+} from "./multiplexer.js";
 
 const SOCKET_PATH =
   process.env.HERDR_SOCKET_PATH ??
@@ -20,6 +28,23 @@ const SAFE_METHODS = new Set([
   "workspace.close",
   "pane.report_agent",
 ]);
+
+/** True when herdr's socket is present — used for startup mux auto-selection. */
+export function herdrAvailable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    // A stale socket file can linger after herdr exits, so actually connect —
+    // a listening server accepts, a dead one refuses (ECONNREFUSED).
+    if (!existsSync(SOCKET_PATH)) return resolve(false);
+    const conn = net.connect(SOCKET_PATH);
+    const finish = (v: boolean): void => {
+      conn.destroy();
+      resolve(v);
+    };
+    conn.once("connect", () => finish(true));
+    conn.once("error", () => finish(false));
+    conn.setTimeout(1000, () => finish(false));
+  });
+}
 
 let seq = 0;
 
@@ -261,5 +286,82 @@ export async function paneExists(paneId: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ── Multiplexer adapter ────────────────────────────────
+
+/** herdr's agent_status vocabulary → the neutral PaneStatus. */
+function mapHerdrStatus(s: string | undefined): PaneStatus {
+  switch (s) {
+    case "working":
+      return "busy";
+    case "blocked":
+      return "awaiting";
+    default:
+      return "idle";
+  }
+}
+
+/** Wraps the herdr socket functions above as a Multiplexer. Behavior-preserving:
+ *  each method is a thin delegation; the only new logic is normalizing status
+ *  and folding the two subscribed event types into one status callback. */
+export class HerdrMultiplexer implements Multiplexer {
+  readonly name = "herdr";
+
+  async listPanes(): Promise<PaneInfo[]> {
+    const agents = await agentList();
+    return agents.map((a) => ({
+      paneId: a.pane_id,
+      agent: a.agent,
+      cwd: a.cwd,
+      focused: a.focused,
+      status: mapHerdrStatus(a.agent_status),
+      sessionId: a.agent_session?.value,
+    }));
+  }
+
+  watchStatus(
+    paneId: string,
+    onStatus: (s: PaneStatus) => void,
+    onClose: (err?: Error) => void,
+  ): StatusSub {
+    return subscribe(
+      [
+        { type: "pane.agent_status_changed", pane_id: paneId },
+        { type: "pane.closed", pane_id: paneId },
+      ],
+      (event, data) => {
+        if (event === "pane.closed") {
+          onStatus("closed");
+          return;
+        }
+        if (event === "pane.agent_status_changed") {
+          const raw = (data.state as string | undefined) ?? (data.agent_status as string | undefined);
+          onStatus(mapHerdrStatus(raw));
+        }
+      },
+      onClose,
+    );
+  }
+
+  read(paneId: string, lines: number): Promise<string> {
+    return paneRead(paneId, "visible", lines);
+  }
+
+  send(paneId: string, text: string, keys?: string[]): Promise<void> {
+    return sendInput(paneId, text, keys);
+  }
+
+  sessionId(paneId: string): Promise<string | undefined> {
+    return paneSessionId(paneId);
+  }
+
+  exists(paneId: string): Promise<boolean> {
+    return paneExists(paneId);
+  }
+
+  explain(paneId: string): Promise<Explanation> {
+    return agentExplain(paneId);
   }
 }
