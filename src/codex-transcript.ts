@@ -168,8 +168,16 @@ function toolSearchOutput(tools: unknown): string {
   return `Found ${count} tools: ${shown.join(", ")}${suffix}`;
 }
 
+function outputIsPending(status: string | undefined): boolean {
+  return status === "in_progress" || status === "pending" || status === "running";
+}
+
+function outputOk(status: string | undefined): boolean {
+  return status !== "failed" && status !== "incomplete";
+}
+
 function webSearchIsRunning(status: string | undefined): boolean {
-  return status === "searching" || status === "in_progress" || status === "pending";
+  return status === "searching" || outputIsPending(status);
 }
 
 interface WebSearchState {
@@ -255,13 +263,13 @@ export class CodexEntryParser {
     if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
       const id = payload.call_id;
       if (!id) return [];
-      return [{ t: "toolResult", id, output: outputText(payload.output), ok: payload.status !== "failed" }];
+      return [{ t: "toolResult", id, output: outputText(payload.output), ok: outputOk(payload.status) }];
     }
 
     if (payload.type === "tool_search_output") {
       const id = payload.call_id;
-      if (!id) return [];
-      return [{ t: "toolResult", id, output: toolSearchOutput(payload.tools ?? payload.output), ok: payload.status !== "failed" }];
+      if (!id || outputIsPending(payload.status)) return [];
+      return [{ t: "toolResult", id, output: toolSearchOutput(payload.tools ?? payload.output), ok: outputOk(payload.status) }];
     }
 
     return [];
@@ -280,7 +288,7 @@ export class CodexEntryParser {
     if (!prev?.started) events.push({ t: "tool", id, name: "WebSearch", input });
     this.rememberWebSearch(id, { started: true, completed: terminal });
     if (terminal) {
-      events.push({ t: "toolResult", id, output: webSearchOutput(input), ok: payload.status !== "failed" });
+      events.push({ t: "toolResult", id, output: webSearchOutput(input), ok: outputOk(payload.status) });
     }
     return events;
   }

@@ -163,6 +163,24 @@ const codexToolSearchOutput = parseCodexEntry(JSON.stringify({
 t("codex-tool-search-output", codexToolSearchOutput, [
   {t:"toolResult", id:"call_tools", output:"Found 2 tools: github, linear", ok:true},
 ]);
+const codexToolSearchProgress = new CodexEntryParser();
+const codexToolSearchPendingOutput = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_output", call_id:"call_tools_progress", status:"in_progress", tools:[]},
+});
+const codexToolSearchCompletedOutput = JSON.stringify({
+  type: "response_item",
+  payload: {type:"tool_search_output", call_id:"call_tools_progress", status:"completed", tools:[
+    {namespace:"github", name:"github.pr"},
+  ]},
+});
+t("codex-tool-search-output-progress", [
+  codexToolSearchProgress.parse(codexToolSearchPendingOutput),
+  codexToolSearchProgress.parse(codexToolSearchCompletedOutput),
+], [
+  [],
+  [{t:"toolResult", id:"call_tools_progress", output:"Found 1 tools: github", ok:true}],
+]);
 t("codex-turn-aborted", parseCodexEntry(JSON.stringify({
   type: "event_msg",
   payload: {type:"turn_aborted", reason:"interrupted"},
