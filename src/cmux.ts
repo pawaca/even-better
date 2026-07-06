@@ -64,6 +64,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Whether a pid is a live process. Signal 0 only probes; EPERM means it exists
+ *  but is owned by another user (still alive), ESRCH means it is gone. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Agent session ids arrive prefixed by source (`claude-<uuid>`) in events but
  *  bare (`<uuid>`) in the hook file and `checkpoint_id`. Reduce to the trailing
  *  UUID so both forms compare equal; fall back to a leading-source strip. */
@@ -92,6 +103,7 @@ interface HookSessionEntry {
   surfaceId?: string;
   workspaceId?: string;
   sessionId?: string;
+  pid?: number;
 }
 interface HookSessionsFile {
   activeSessionsBySurface?: Record<string, { sessionId?: string }>;
@@ -153,11 +165,8 @@ export class CmuxMultiplexer implements Multiplexer {
       const data = parsed as HookSessionsFile;
       const active = data.activeSessionsBySurface ?? {};
       const sessions = data.sessions ?? {};
-      for (const [surfaceId, ref] of Object.entries(active)) {
-        const sid = ref?.sessionId;
-        if (!sid) continue;
-        const entry = sessions[sid] ?? {};
-        const bare = bareSession(sid);
+      const add = (surfaceId: string, bare: string, entry: HookSessionEntry): void => {
+        if (surfaceMeta.has(surfaceId)) return;
         surfaceMeta.set(surfaceId, {
           agent,
           cwd: entry.cwd ?? "",
@@ -166,6 +175,20 @@ export class CmuxMultiplexer implements Multiplexer {
         });
         sessionToSurface.set(bare, surfaceId);
         if (entry.workspaceId) workspaceToSurface.set(entry.workspaceId, surfaceId);
+      };
+      // Primary index: cmux's own active-surface map (restorable sessions live
+      // here without a surfaceId of their own).
+      for (const [surfaceId, ref] of Object.entries(active)) {
+        const sid = ref?.sessionId;
+        if (sid) add(surfaceId, bareSession(sid), sessions[sid] ?? {});
+      }
+      // A `--command`-launched agent lands only in `sessions` with its own
+      // surfaceId+pid and is absent from activeSessionsBySurface, so also take
+      // live (pid-alive) sessions map entries. pid-liveness drops stale ones.
+      for (const [sid, entry] of Object.entries(sessions)) {
+        if (entry.surfaceId && entry.pid && pidAlive(entry.pid)) {
+          add(entry.surfaceId, bareSession(entry.sessionId ?? sid), entry);
+        }
       }
     }
     this.surfaceMeta = surfaceMeta;
@@ -268,6 +291,11 @@ export class CmuxMultiplexer implements Multiplexer {
   private onEvent(evt: Record<string, unknown>): void {
     const name = typeof evt.name === "string" ? evt.name : "";
     const payload = isRecord(evt.payload) ? evt.payload : {};
+    // cmux delivers each agent.hook.* event twice — once per phase ("received"
+    // then "completed"). Act on a single phase so every hook drives exactly one
+    // status transition; double-processing strands turns (a duplicate `busy`
+    // after Stop cancels the idle debounce with no re-arm) and re-emits menus.
+    if (name.startsWith("agent.hook.") && payload.phase === "completed") return;
     const topSurface = typeof evt.surface_id === "string" ? evt.surface_id : undefined;
     const paySurface = typeof payload.surface_id === "string" ? payload.surface_id : undefined;
 
