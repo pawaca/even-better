@@ -32,6 +32,11 @@ function paint(code: string, s: string): string {
 }
 
 const OUTPUT_WINDOW_LINES = 120;
+// A live claude/codex selection menu renders a cursor (❯/›) on the highlighted
+// numbered option; a plain numbered list in prior transcript output never does.
+// The startup block probe requires this so it can't fake a prompt from
+// scrollback (parseMenu alone matches "1."/"2." lines anywhere).
+const LIVE_MENU_CURSOR = /^[ \t]*[❯›][ \t]*\d[.)]/m;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
@@ -491,7 +496,7 @@ export class PaneBridge {
       return;
     }
     if (this.disposed) return;
-    if (parseMenu(screen)) {
+    if (LIVE_MENU_CURSOR.test(screen) && parseMenu(screen)) {
       this.state = "awaiting";
       void this.emitBlockedMenu();
     }

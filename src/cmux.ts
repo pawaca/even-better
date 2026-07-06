@@ -173,8 +173,24 @@ export class CmuxMultiplexer implements Multiplexer {
     this.workspaceToSurface = workspaceToSurface;
   }
 
+  /** Seed the focused surface authoritatively. `surface.focused` events keep it
+   *  live afterwards, but at startup none have fired yet, so without this every
+   *  pane reports focused:false and a no-sessionId prompt could target an
+   *  arbitrary older surface. */
+  private async resolveFocused(): Promise<void> {
+    try {
+      const parsed: unknown = JSON.parse(await cmux(["--id-format", "both", "identify", "--json"]));
+      if (isRecord(parsed) && isRecord(parsed.focused) && typeof parsed.focused.surface_id === "string") {
+        this.focusedSurface = parsed.focused.surface_id;
+      }
+    } catch {
+      // leave focus as last known (from events); listPanes still returns panes
+    }
+  }
+
   async listPanes(): Promise<PaneInfo[]> {
     this.refreshMaps();
+    await this.resolveFocused();
     const panes: PaneInfo[] = [];
     for (const [surfaceId, meta] of this.surfaceMeta) {
       panes.push({
