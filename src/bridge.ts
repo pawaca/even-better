@@ -137,6 +137,8 @@ export class PaneBridge {
   private disposed = false;
 
   private lastProseBlock = "";
+  private turnSuccess = true;
+  private turnResultText = "";
   private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
@@ -395,6 +397,12 @@ export class PaneBridge {
         });
         return;
       }
+      case "turnEnd": {
+        this.turnSuccess = e.success;
+        const text = e.text?.trim();
+        if (text) this.turnResultText = text;
+        return;
+      }
     }
   }
 
@@ -472,6 +480,8 @@ export class PaneBridge {
     this.turnInputTokens = 0;
     this.turnOutputTokens = 0;
     this.lastProseBlock = ""; // don't let a prose-less turn reuse old text
+    this.turnSuccess = true;
+    this.turnResultText = "";
     this.state = "busy";
     emit(this.paneId, { type: "status", state: "busy", sessionId: this.paneId });
     this.startStats();
@@ -609,10 +619,11 @@ export class PaneBridge {
     // wire order without making long answers delay the terminal state.
     this.out.flush();
     let text = "";
-    if (this.lastProseBlock) {
+    if (this.turnResultText) {
+      text = this.turnResultText;
+    } else if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
       text = this.lastProseBlock;
-      this.lastProseBlock = "";
     } else {
       try {
         const raw = await this.readPane();
@@ -622,10 +633,14 @@ export class PaneBridge {
       }
     }
     const durationMs = this.turnStartMs ? Date.now() - this.turnStartMs : 0;
+    const success = this.turnSuccess;
     this.turnStartMs = 0;
+    this.turnSuccess = true;
+    this.turnResultText = "";
+    this.lastProseBlock = "";
     emit(this.paneId, {
       type: "result",
-      success: true,
+      success,
       text: renderForGlasses(text),
       sessionId: this.paneId,
       costUsd: 0,

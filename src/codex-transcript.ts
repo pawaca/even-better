@@ -57,14 +57,20 @@ interface CodexPayload {
   type?: string;
   role?: string;
   message?: unknown;
+  last_agent_message?: unknown;
   content?: unknown;
   id?: string;
   call_id?: string;
   name?: string;
   arguments?: unknown;
   input?: unknown;
+  action?: unknown;
+  query?: unknown;
   output?: unknown;
+  tools?: unknown;
   status?: string;
+  reason?: string;
+  num_turns?: number;
   info?: {
     last_token_usage?: CodexUsage;
     total_token_usage?: CodexUsage;
@@ -77,7 +83,7 @@ interface CodexEntry {
   payload?: CodexPayload;
 }
 
-type MessageSource = "response_item" | "event_msg";
+type MessageSource = "response_item" | "event_msg" | "task_complete";
 
 const MESSAGE_DEDUPE_MS = 30_000;
 
@@ -111,6 +117,12 @@ function parseCustomInput(input: unknown): Record<string, unknown> {
   return input === undefined || input === null ? {} : { input };
 }
 
+function parseWebSearchInput(payload: CodexPayload): Record<string, unknown> {
+  if (isRecord(payload.action)) return payload.action;
+  if (typeof payload.query === "string") return { type: "search", query: payload.query };
+  return {};
+}
+
 function outputText(output: unknown): string {
   if (typeof output === "string") return output;
   if (output === undefined || output === null) return "";
@@ -130,10 +142,37 @@ function usageKey(u: { input: number; output: number }): string {
   return `${u.input}:${u.output}`;
 }
 
+function webSearchOutput(input: Record<string, unknown>): string {
+  if (typeof input.url === "string") return `Opened ${input.url}`;
+  if (typeof input.query === "string") return `Searched ${input.query}`;
+  if (Array.isArray(input.queries) && input.queries.length) return `Searched ${String(input.queries[0])}`;
+  return "Web search completed";
+}
+
+function toolSearchLabel(tool: unknown): string | null {
+  if (!isRecord(tool)) return null;
+  const candidates = [tool.namespace, tool.server, tool.name, tool.id];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return null;
+}
+
+function toolSearchOutput(tools: unknown): string {
+  if (!Array.isArray(tools)) return outputText(tools);
+  const count = tools.length;
+  const labels = [...new Set(tools.map(toolSearchLabel).filter((v): v is string => v !== null))];
+  if (!labels.length) return `Found ${count} tools`;
+  const shown = labels.slice(0, 5);
+  const suffix = labels.length > shown.length ? `, +${labels.length - shown.length} more` : "";
+  return `Found ${count} tools: ${shown.join(", ")}${suffix}`;
+}
+
 export class CodexEntryParser {
   private lastTotalUsage: { input: number; output: number } | null = null;
   private lastUsageSnapshot = "";
   private recentMessages = new Map<string, { at: number; source: MessageSource }>();
+  private completedWebSearches = new Set<string>();
 
   parse(line: string): AgentEvent[] {
     let entry: CodexEntry;
@@ -153,6 +192,19 @@ export class CodexEntryParser {
       }
       if (payload.type === "agent_message") {
         return this.parseChatMessage("assistant", outputText(payload.message), "event_msg", entry);
+      }
+      if (payload.type === "task_complete") {
+        return this.parseChatMessage("assistant", outputText(payload.last_agent_message), "task_complete", entry);
+      }
+      if (payload.type === "web_search_end") return this.parseWebSearch(payload);
+      if (payload.type === "turn_aborted") {
+        const reason = payload.reason?.trim();
+        const text = reason === "interrupted" ? "Interrupted by user" : `Turn aborted${reason ? `: ${reason}` : ""}`;
+        return [{ t: "turnEnd", success: false, text }];
+      }
+      if (payload.type === "thread_rolled_back") {
+        const n = typeof payload.num_turns === "number" && payload.num_turns > 0 ? payload.num_turns : 1;
+        return [{ t: "turnEnd", success: false, text: `Rolled back ${n} turn${n === 1 ? "" : "s"}` }];
       }
       return [];
     }
@@ -183,13 +235,47 @@ export class CodexEntryParser {
       return [{ t: "tool", id, name, input: parseCustomInput(payload.input) }];
     }
 
+    if (payload.type === "web_search_call") return this.parseWebSearch(payload);
+
+    if (payload.type === "tool_search_call") {
+      const id = payload.call_id ?? payload.id;
+      if (!id) return [];
+      return [{ t: "tool", id, name: "tool_search", input: parseArguments(payload.arguments) }];
+    }
+
     if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
       const id = payload.call_id;
       if (!id) return [];
       return [{ t: "toolResult", id, output: outputText(payload.output), ok: payload.status !== "failed" }];
     }
 
+    if (payload.type === "tool_search_output") {
+      const id = payload.call_id;
+      if (!id) return [];
+      return [{ t: "toolResult", id, output: toolSearchOutput(payload.tools ?? payload.output), ok: payload.status !== "failed" }];
+    }
+
     return [];
+  }
+
+  private parseWebSearch(payload: CodexPayload): AgentEvent[] {
+    const id = payload.call_id ?? payload.id;
+    if (!id || !this.rememberWebSearch(id)) return [];
+    const input = parseWebSearchInput(payload);
+    return [
+      { t: "tool", id, name: "WebSearch", input },
+      { t: "toolResult", id, output: webSearchOutput(input), ok: payload.status !== "failed" },
+    ];
+  }
+
+  private rememberWebSearch(id: string): boolean {
+    if (this.completedWebSearches.has(id)) return false;
+    this.completedWebSearches.add(id);
+    if (this.completedWebSearches.size > 500) {
+      const first = this.completedWebSearches.values().next().value;
+      if (typeof first === "string") this.completedWebSearches.delete(first);
+    }
+    return true;
   }
 
   private parseChatMessage(
