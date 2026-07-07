@@ -189,6 +189,31 @@ export function classifyMenu(menu: ParsedMenu): ClassifiedMenu {
   return { kind: "question" };
 }
 
+/**
+ * Coarse detector for a codex tool-approval prompt on the visible screen.
+ * Codex delivers exec/patch approvals as protocol `EventMsg`s (not hooks) that
+ * never reach the cmux event stream and are not persisted to the rollout, so the
+ * screen is the only signal the cmux backend can see (see `docs/PERMISSIONS.md`).
+ * Ties detection to the live chooser *block*: a **selected (`❯`/`›`-marked)
+ * option row** with the "enter to confirm … esc to cancel" **footer a few lines
+ * below it** (the chooser renders options then the footer), plus a parseable
+ * menu. Each guard rules out a false positive that the others don't: the footer
+ * string appears in ordinary output (even this repo's docs); `parseMenu` accepts
+ * unmarked numbered *prose* lists; and `›` is also codex's input-prompt prefix —
+ * but only a live dialog puts a marked row directly above the footer.
+ */
+export function isCodexApprovalScreen(text: string): boolean {
+  if (parseMenu(text) === null) return false;
+  const lines = text.split("\n");
+  // ANY marked option row with the footer just below it — not only the first,
+  // since a stale `› N.` prompt echo can sit above the live dialog.
+  return lines.some((line, i) => {
+    if (!/^[ \t]*[❯›][ \t]*\d[.)]\s/.test(line)) return false;
+    const below = lines.slice(i, i + 8).join("\n");
+    return /enter to confirm\b/i.test(below) && /esc to cancel\b/i.test(below);
+  });
+}
+
 /** Extract "[Opus 4.6]"-style model names from a claude pane status bar. */
 export function extractModel(text: string): string {
   const m = text.match(/\[((?:Opus|Sonnet|Haiku|Fable)[^\]]{0,20})\]/);
