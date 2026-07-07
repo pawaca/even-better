@@ -150,6 +150,17 @@ waits forever for a transition); `retry: 2000` + socket-error logging; persisted
 timing-safe token; always-500 `/prompt` errors; stubbed `/update-check` &
 `/sessions/:id/history`; no `/debug/*` or `/metrics` routes.
 
+## Host limitation: one agent type per connection
+
+even-better reports a **single** `provider` to the app — `/api/info` and the QR
+connection default both derive it from the focused/first agent
+(`providerForAgent(target)`, `focusedOrFirstBridge`). `/api/sessions` *does*
+return every pane tagged with its own `provider`, but a connected app is
+configured for one type, so **only that agent type's sessions surface on the
+glasses**. Two agent types cannot be shown at once; to see the other, make it the
+focused agent so `/info` reports it (i.e. switch the host's type). Prerequisite —
+the agent must also be tracked by the mux (`docs/MULTIPLEXERS.md` §Prerequisites).
+
 ## Not wire types
 
 Grepping `type: "..."` also hits two values that are **not** protocol events:

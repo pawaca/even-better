@@ -18,6 +18,37 @@ Provenance tags: 🟢 **source** (read the backend's own code) · 🔵 **live**
 
 ---
 
+## Prerequisites: agent hooks, and what breaks without them
+
+The two backends **discover agents differently**, so a missing hook has different
+consequences — this is the first thing to check when "my agent doesn't show up."
+(🔵 verified on this machine · 🟢 source.)
+
+| Mux + agent | Setup | Effect of the hook / gotcha |
+|---|---|---|
+| **cmux + claude** | none — automatic | cmux ships `cmux-claude-wrapper`; a per-surface PATH shim (`$TMPDIR/cmux-cli-shims/<surface>/claude`) intercepts `claude` and injects `--settings {hooks:…}` at launch. **claude-only** — there is no codex wrapper/shim. |
+| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `~/.codex/hooks.json` (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch (fires `SessionStart`/`UserPromptSubmit` lazily). |
+| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (🟢 `src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
+
+**Discovery is hook-only for cmux but screen-based for herdr, so a missing hook
+means different things:**
+- **cmux:** no hook ⇒ the pane is not an agent to cmux ⇒ absent from `listPanes()`
+  ⇒ **invisible** to even-better. (codex additionally needs its first prompt before
+  it registers at all.)
+- **herdr:** no hook ⇒ herdr still detects and exposes the pane, and even-better
+  mirrors it through the `ScreenTimeline` fallback (`src/bridge.ts:173-188`) — you
+  lose only the **structured transcript** (`sessionId()` is empty, so it scrapes
+  the screen instead of tailing the jsonl). Visible, lower fidelity.
+
+**Related host limitation (one agent type at a time):** even-better's `/api/info`
+and the QR connection report a **single** `provider` — the focused/first agent's
+type (`focusedOrFirstBridge`). `/api/sessions` returns *both* types (each tagged
+`provider`), but the connected app configures for one, so only that type's
+sessions surface on the glasses. To see the other agent, make it the focused agent
+(switch the host's type). Details in `docs/PROTOCOL.md`.
+
+---
+
 ## 1. The interface, mapped to both backends
 
 `Multiplexer` (`src/multiplexer.ts:39-67`): 7 required methods, 3 optional. Both
