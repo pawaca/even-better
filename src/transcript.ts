@@ -1,8 +1,32 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, Timeline, Usage } from "./spine.js";
 import { JsonlTail } from "./jsonl-tail.js";
+
+/** The model a Claude session is running, from the last assistant record's
+ *  `message.model` in the jsonl — the structured source, instead of scraping the
+ *  status bar. Full-file scan; fine for the infrequent /info call, undefined if
+ *  no session file / no model line yet. */
+export function readClaudeModel(sessionId: string): string | undefined {
+  const file = findSessionFile(sessionId);
+  if (!file) return undefined;
+  let model: string | undefined;
+  try {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes('"model"')) continue;
+      try {
+        const e = JSON.parse(line) as { message?: { model?: unknown } };
+        if (typeof e.message?.model === "string") model = e.message.model;
+      } catch {
+        // skip unparseable line
+      }
+    }
+  } catch {
+    // file gone
+  }
+  return model;
+}
 
 // Tail a Claude Code session transcript (~/.claude/projects/*/<id>.jsonl).
 // The transcript is the authoritative record of a session: user prompts,
@@ -29,6 +53,7 @@ interface ContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string | { type: string; text?: string }[];
+  is_error?: boolean; // set by Claude Code on a failed tool_result (query.ts)
 }
 
 interface Entry {
@@ -75,7 +100,7 @@ export function parseEntry(line: string): AgentEvent[] {
     if (Array.isArray(content)) {
       for (const b of content) {
         if (b.type === "tool_result" && b.tool_use_id) {
-          events.push({ t: "toolResult", id: b.tool_use_id, output: resultText(b), ok: true });
+          events.push({ t: "toolResult", id: b.tool_use_id, output: resultText(b), ok: b.is_error !== true });
         } else if (b.type === "text" && b.text?.trim() && !b.text.trimStart().startsWith("<")) {
           events.push({ t: "prompt", text: b.text });
         }

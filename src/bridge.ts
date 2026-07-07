@@ -376,11 +376,15 @@ export class PaneBridge {
         const pending = this.pendingTools.get(e.id);
         if (!pending) return;
         this.pendingTools.delete(e.id);
+        const summary = summarizeTool(pending.name, pending.input);
         this.out.event({
           type: "tool_end",
           name: pending.name,
           toolId: e.id,
-          summary: summarizeTool(pending.name, pending.input),
+          // even-terminal's tool_end has no error field, so surface a failed tool
+          // (claude is_error / codex non-ok output) in the rendered summary —
+          // otherwise the failure flag never reaches the app.
+          summary: e.ok ? summary : `[failed] ${summary}`,
           detail: { input: pending.input, output: e.output.slice(0, 1500) },
         });
         return;

@@ -20,6 +20,8 @@ import { HerdrMultiplexer, herdrAvailable } from "./herdr.js";
 import { CmuxMultiplexer, cmuxAvailable } from "./cmux.js";
 import { logEvent, eventLogPath } from "./log.js";
 import { extractModel } from "./parse.js";
+import { readClaudeModel } from "./transcript.js";
+import { readCodexModel } from "./codex-transcript.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
 
 const VERSION = "0.1.0";
@@ -183,9 +185,17 @@ api.get("/info", async (_req, res) => {
     const agents = await refreshAgents();
     const target = agents.find((a) => a.focused) ?? agents[0];
     provider = providerForAgent(target?.agent);
-    if (target?.agent === "claude") {
-      const text = await getMux().read(target.paneId, 5);
-      model = extractModel(text);
+    // Prefer the structured model from the transcript (works for codex too, and
+    // is exact); fall back to the claude status-bar scrape only if no session id
+    // exists yet.
+    if (target?.sessionId) {
+      model =
+        (target.agent === "codex"
+          ? readCodexModel(target.sessionId)
+          : readClaudeModel(target.sessionId)) ?? "";
+    }
+    if (!model && target?.agent === "claude") {
+      model = extractModel(await getMux().read(target.paneId, 5));
     }
   } catch {
     // leave model unknown

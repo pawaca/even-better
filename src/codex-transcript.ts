@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, Timeline } from "./spine.js";
@@ -41,6 +41,29 @@ export function findCodexSessionFile(sessionId: string): string | null {
     }
   }
   return null;
+}
+
+/** The model a Codex session is running, from the rollout `turn_context` record's
+ *  `payload.model` (a required field upstream) — structured, instead of "Unknown".
+ *  Full-file scan; fine for the infrequent /info call. */
+export function readCodexModel(sessionId: string): string | undefined {
+  const file = findCodexSessionFile(sessionId);
+  if (!file) return undefined;
+  let model: string | undefined;
+  try {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes("turn_context") || !line.includes('"model"')) continue;
+      try {
+        const e = JSON.parse(line) as { payload?: { model?: unknown } };
+        if (typeof e.payload?.model === "string") model = e.payload.model;
+      } catch {
+        // skip unparseable line
+      }
+    }
+  } catch {
+    // file gone
+  }
+  return model;
 }
 
 interface CodexUsage {
