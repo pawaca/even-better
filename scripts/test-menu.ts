@@ -85,9 +85,12 @@ const codexPatchScreen = [
   "  Press enter to confirm or esc to cancel",
 ].join("\n");
 const codexWorking = ["• Working (12s • esc to interrupt)", "› Run the shell command"].join("\n");
+// The question can appear in ordinary prose — it must NOT trigger without the footer.
+const codexProse = ["• I can do that. Would you like to run the tests first?", "› _"].join("\n");
 t("codex approval screen (exec) detected", isCodexApprovalScreen(codexExecScreen));
 t("codex approval screen (patch) detected", isCodexApprovalScreen(codexPatchScreen));
 t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
+t("codex prose 'would you like to run' (no footer) not detected", !isCodexApprovalScreen(codexProse));
 t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {
