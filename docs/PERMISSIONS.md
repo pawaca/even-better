@@ -71,9 +71,10 @@ setup — a coarse screen detector is the only option (like herdr's screen-based
 
 **Implemented (🔵 verified end-to-end).** `CmuxMultiplexer` screen-polls a **busy
 codex** surface every 700 ms (`CODEX_APPROVAL_POLL_MS`) and, when
-`isCodexApprovalScreen()` matches (`parse.ts` — requires **both** the "enter to
-confirm … esc to cancel" footer **and** a live `parseMenu` menu, so neither footer
-text in ordinary output nor a numbered prose list triggers it), routes `awaiting`
+`isCodexApprovalScreen()` matches (`parse.ts` — requires the "enter to confirm …
+esc to cancel" footer, a live `parseMenu` menu, **and** a `❯`/`›`-marked selected
+row, so neither footer text in output nor an unmarked numbered prose list triggers
+it), routes `awaiting`
 with kind `permission`; when the prompt clears it routes back to `busy` (or `idle`
 if a turn-end `Stop` was withheld while the menu was up). The bridge is untouched — its normal `onStatus(awaiting) → emitBlockedMenu
 → parseMenu → permission_request` path builds the request, and the fixed-key

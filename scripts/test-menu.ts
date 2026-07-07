@@ -98,11 +98,20 @@ const codexFooterEcho = [
   '    "Press enter to confirm or esc to cancel" is the anchor.',
   "› _",
 ].join("\n");
+// Footer text AND an UNMARKED numbered prose list (no ❯/› selected row) — output,
+// not a live chooser.
+const codexFooterPlusProseList = [
+  "• Options I considered (see: press enter to confirm or esc to cancel):",
+  "  1. rewrite the parser",
+  "  2. add a flag",
+  "› _",
+].join("\n");
 t("codex approval screen (exec) detected", isCodexApprovalScreen(codexExecScreen));
 t("codex approval screen (patch) detected", isCodexApprovalScreen(codexPatchScreen));
 t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
 t("codex prose 'would you like to run' (no footer) not detected", !isCodexApprovalScreen(codexProse));
 t("codex footer text in output (no menu) not detected", !isCodexApprovalScreen(codexFooterEcho));
+t("codex footer + unmarked prose list (no › row) not detected", !isCodexApprovalScreen(codexFooterPlusProseList));
 t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {
