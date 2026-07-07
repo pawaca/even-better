@@ -15,6 +15,8 @@ interface SessionBuf {
 }
 
 const sessions = new Map<string, SessionBuf>();
+// Diagnostic only: when each session last lost its client, to log reconnect gaps.
+const lastDisconnectAt = new Map<string, number>();
 
 function bufFor(sessionId: string): SessionBuf {
   let s = sessions.get(sessionId);
@@ -46,12 +48,22 @@ export function emit(sessionId: string, msg: object): void {
   if (process.env.VERBOSE === "1") {
     console.log(`[SSE-${sessionId}] ${JSON.stringify(msg)}`);
   }
+  // Diagnostic: the agent is producing output but no live client is attached, so
+  // it only lands in the buffer. A run of these during a "frozen glass" window
+  // means the drop went unnoticed (half-open socket) or the app hasn't
+  // reconnected. (Skip text_delta to avoid flooding the log.)
+  if (s.clients.size === 0 && type !== "text_delta") {
+    console.log(`[sse] no live client — buffering session=${sessionId} type=${type} buffered=${s.messages.length}`);
+  }
   const data = JSON.stringify(msg);
   for (const res of s.clients) {
     try {
       res.write(`id: ${id}\ndata: ${data}\n\n`);
     } catch {
       s.clients.delete(res);
+      // When this fires long after the glass actually went quiet, the gap
+      // between that wall-clock and now is the half-open dead-socket window.
+      console.warn(`[sse] write failed — dropped dead client session=${sessionId} clients=${s.clients.size}`);
     }
   }
 }
@@ -79,9 +91,26 @@ export function sseHandler(req: Request, res: Response): void {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
   res.write(":ok\n\n");
+  // Tell the app's EventSource to reconnect fast (default is 3s) and keep
+  // retrying persistently — so a dropped stream re-establishes quickly once the
+  // client (app) notices it's dead.
+  res.write("retry: 2000\n\n");
+
+  // Log HOW the socket dies (ECONNRESET / ETIMEDOUT / EPIPE) for drop diagnosis.
+  // NOTE: the server cannot quickly detect a half-open socket (phone off Wi-Fi):
+  // the 15s heartbeat below keeps the socket non-idle so TCP keepalive never
+  // fires, and Node exposes no TCP_USER_TIMEOUT, so an unacked write only fails
+  // on TCP's multi-minute retransmit timeout. Un-sticking a frozen session is
+  // therefore an app-side concern — here we just log and let `req.on('close')`
+  // clean up. `retry:` above helps the app reconnect fast once IT notices.
+  res.socket?.on("error", (err) => {
+    const code = (err as NodeJS.ErrnoException).code ?? err.message;
+    console.warn(`[sse] socket error session=${sessionId} code=${code}`);
+  });
 
   const s = bufFor(sessionId);
-  if (req.query.needReplay === "true" && s.messages.length > 0) {
+  const needReplay = req.query.needReplay === "true";
+  if (needReplay && s.messages.length > 0) {
     // Cap the replay: the pane may have produced hours of output while no
     // client was connected, and dumping the whole buffer floods the glasses.
     const REPLAY_MAX = 20;
@@ -90,7 +119,17 @@ export function sseHandler(req: Request, res: Response): void {
     }
   }
   s.clients.add(res);
-  console.log(`[sse] client connected session=${sessionId} (clients: ${s.clients.size})`);
+  const connectedAt = Date.now();
+  // Diagnostic: reconnect gap (how long the glass had no live stream), whether
+  // the app asked for replay, and whether it sent a standard Last-Event-ID (if
+  // it does, honoring that header would give precise gap-free replay).
+  const prevOff = lastDisconnectAt.get(sessionId);
+  const gap = prevOff ? `${Math.round((connectedAt - prevOff) / 1000)}s` : "first";
+  const lastEventId = req.headers["last-event-id"];
+  console.log(
+    `[sse] connect session=${sessionId} reconnect_gap=${gap} needReplay=${needReplay} ` +
+      `lastEventId=${lastEventId ?? "-"} buffered=${s.messages.length} clients=${s.clients.size}`,
+  );
 
   const heartbeat = setInterval(() => {
     try {
@@ -98,12 +137,18 @@ export function sseHandler(req: Request, res: Response): void {
     } catch {
       clearInterval(heartbeat);
       s.clients.delete(res);
+      // Heartbeat is the main way a half-open socket is noticed; the delay from
+      // the real network drop to this line is the detection latency.
+      const lived = Math.round((Date.now() - connectedAt) / 1000);
+      console.warn(`[sse] heartbeat failed — dropped dead client session=${sessionId} lived=${lived}s`);
     }
   }, 15_000);
 
   req.on("close", () => {
     clearInterval(heartbeat);
     s.clients.delete(res);
-    console.log(`[sse] client disconnected session=${sessionId}`);
+    lastDisconnectAt.set(sessionId, Date.now());
+    const lived = Math.round((Date.now() - connectedAt) / 1000);
+    console.log(`[sse] disconnect session=${sessionId} lived=${lived}s clients=${s.clients.size}`);
   });
 }
