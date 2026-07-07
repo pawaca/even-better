@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, networkInterfaces } from "node:os";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import express from "express";
@@ -18,14 +17,57 @@ import { emit, getMessages, sseHandler } from "./sse.js";
 import { getMux, setMux, type Multiplexer } from "./multiplexer.js";
 import { HerdrMultiplexer, herdrAvailable } from "./herdr.js";
 import { CmuxMultiplexer, cmuxAvailable } from "./cmux.js";
-import { logEvent, eventLogPath } from "./log.js";
+import { logEvent, eventLogPath, logMode, writesEventLog } from "./log.js";
 import { extractModel } from "./parse.js";
 import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
 
 const VERSION = "0.1.0";
-const PORT = parseInt(process.env.PORT ?? "3456", 10);
+const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
+
+function parsePort(raw: string | undefined): number {
+  const value = raw?.trim();
+  if (!value || value.toLowerCase() === "auto") return 0;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    console.error(`error: invalid PORT "${raw}". Use a number, 0, or auto.`);
+    return process.exit(1);
+  }
+  return port;
+}
+
+const listenPort = parsePort(process.env.PORT);
+
+const removedEnv = [
+  "ACCESS",
+  "BIND",
+  "EXPOSE",
+  "TUNNEL",
+  "BASE_PATH",
+  "FUNNEL_MODE",
+  "FUNNEL_PORT",
+  "FUNNEL_PROGRAM_PATH",
+  "EVENT_LOG",
+  "EVENT_LOG_TEXT",
+  "DEBUG_STREAM",
+  "VERBOSE",
+  "NO_QR",
+  "PINGGY_PROGRAM_PATH",
+  "BORE_PROGRAM_PATH",
+  "NGROK_PROGRAM_PATH",
+  "CLOUDFLARED_PROGRAM_PATH",
+  "HERDR_SOCKET_PATH",
+  "CMUX_BIN",
+  "DEFAULT_PROVIDER",
+].filter((name) => process.env[name] !== undefined);
+if (removedEnv.length > 0) {
+  console.error(
+    `error: removed environment variable(s): ${removedEnv.join(", ")}. ` +
+      "Use PORT, BIND_HOST, PUBLIC_ACCESS, PUBLIC_BASE_URL, BRIDGE_TOKEN, LOG, LOG_FILE, QR, or MUX.",
+  );
+  process.exit(1);
+}
 
 // Pick the multiplexer once, before anything touches it. MUX=cmux|herdr forces
 // it. Otherwise: use whichever backend is present; if BOTH are, never guess —
@@ -71,32 +113,79 @@ async function selectMux(): Promise<Multiplexer> {
 
 setMux(await selectMux());
 
-// The bearer token. Priority: BRIDGE_TOKEN env → a token persisted under
-// ~/.config/even-better/token (generated once, reused across restarts so you
-// scan the QR once; rotate by deleting the file) → an ephemeral one.
+// The bearer token is process-local by default. Set BRIDGE_TOKEN explicitly
+// only when a stable token is wanted for a specific launch.
 function resolveToken(): string {
   if (process.env.BRIDGE_TOKEN) return process.env.BRIDGE_TOKEN;
-  const file = path.join(homedir(), ".config", "even-better", "token");
-  try {
-    if (existsSync(file)) {
-      const t = readFileSync(file, "utf8").trim();
-      if (t) return t;
-    }
-    mkdirSync(path.dirname(file), { recursive: true });
-    const t = randomBytes(24).toString("hex");
-    writeFileSync(file, t + "\n", { mode: 0o600 });
-    return t;
-  } catch {
-    return randomBytes(24).toString("hex");
-  }
+  return randomBytes(24).toString("hex");
 }
 const TOKEN = resolveToken();
-const defaultProviderPinned = process.env.DEFAULT_PROVIDER !== undefined;
-let defaultProvider = process.env.DEFAULT_PROVIDER ?? "claude";
+let defaultProvider = "claude";
 
 function providerForAgent(agent: string | undefined): "codex" | "claude" {
   return agent === "codex" ? "codex" : "claude";
 }
+
+function normalizeBasePath(raw: string | undefined): string {
+  if (!raw || raw === "/") return "";
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "/") return "";
+  const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withSlash.replace(/\/+$/, "");
+}
+
+function publicBasePath(raw: string | undefined): string {
+  if (!raw) return "";
+  try {
+    return normalizeBasePath(new URL(raw).pathname);
+  } catch {
+    console.error(`error: invalid PUBLIC_BASE_URL "${raw}"`);
+    return process.exit(1);
+  }
+}
+
+function normalizePublicAccess(raw: string | undefined): string | undefined {
+  const t = (raw ?? "").trim().toLowerCase();
+  if (!t || t === "none") return undefined;
+  if (t === "tailscale-funnel" || t === "funnel") return "funnel";
+  if (exposeProviderNames().includes(t)) return t;
+  const providers = ["tailscale-funnel", ...exposeProviderNames().filter((n) => n !== "funnel")];
+  console.error(`error: unknown PUBLIC_ACCESS "${raw}". Use: none, ${providers.join(", ")}.`);
+  return process.exit(1);
+}
+
+function resolveQr(raw: string | undefined): boolean {
+  if (raw === undefined || raw === "1") return true;
+  if (raw === "0") return false;
+  console.error(`error: invalid QR "${raw}". Use 1 or 0.`);
+  return process.exit(1);
+}
+
+function validatePublicAccessBind(raw: string | undefined): void {
+  if (!publicAccess) return;
+  const b = (raw ?? "auto").trim().toLowerCase();
+  if (!b || b === "auto" || b === "local" || b === "localhost" || b === "127.0.0.1") return;
+  console.error("error: PUBLIC_ACCESS requires BIND_HOST=auto, local, localhost, or 127.0.0.1 because providers proxy to 127.0.0.1.");
+  process.exit(1);
+}
+
+const publicAccess = normalizePublicAccess(process.env.PUBLIC_ACCESS);
+const publicBase = process.env.PUBLIC_BASE_URL?.trim();
+if (publicBase && publicAccess) {
+  console.error("error: PUBLIC_BASE_URL and PUBLIC_ACCESS are mutually exclusive; use one external URL source.");
+  process.exit(1);
+}
+if (publicBase && listenPort === 0) {
+  console.error(
+    "error: PUBLIC_BASE_URL requires a fixed PORT because external proxies cannot follow auto-assigned local ports.",
+  );
+  process.exit(1);
+}
+const publicBaseMountPath = publicBasePath(publicBase);
+const funnelFallbackPath = publicAccess === "funnel" ? `/eb/${INSTANCE_ID}` : "";
+const basePaths = [...new Set([publicBaseMountPath, funnelFallbackPath].filter(Boolean))];
+const qrEnabled = resolveQr(process.env.QR);
+validatePublicAccessBind(process.env.BIND_HOST);
 
 /** Constant-time token check (avoids leaking the token via comparison timing). */
 function tokenMatches(provided: string | undefined): boolean {
@@ -123,6 +212,7 @@ function auth(req: Request, res: Response, next: NextFunction): void {
 
 const api = express.Router();
 app.use("/api", auth, api);
+for (const basePath of basePaths) app.use(`${basePath}/api`, auth, api);
 
 // Log every inbound app request (except the SSE stream itself) for debugging.
 api.use((req, _res, next) => {
@@ -350,80 +440,64 @@ function ipv4s(): string[] {
 const lanAddress = (): string | undefined => ipv4s().find((ip) => !isTailscale(ip));
 const tailscaleAddress = (): string | undefined => ipv4s().find(isTailscale);
 
-const authQuery = (): string => `token=${TOKEN}&defaultProvider=${encodeURIComponent(defaultProvider)}`;
-const urlFor = (host: string): string => `http://${host}:${PORT}?${authQuery()}`;
-// A tunnel gives a full public base (scheme+host); just append the auth query.
-const appUrlFromBase = (base: string): string => `${base}?${authQuery()}`;
-
-// ── access: one knob, one QR ───────────────────────────
-// ACCESS answers a single question — "how does the phone reach the bridge?" —
-// and drives BOTH the listen bind and the one QR we print, so there is nothing
-// to choose between at scan time. Modes:
-//   lan       (default) bind all interfaces, QR = LAN IP     — same Wi-Fi
-//   local               bind loopback,       QR = localhost  — same machine
-//   tailscale           bind tailnet IP,     QR = tailnet IP — private, off-Wi-Fi
-//   tailscale-funnel|pinggy|…  bind loopback + run a public tunnel, QR = its URL
-//   <literal ip>        bind that IP,        QR = that IP
-interface Access {
-  label: string;
-  bindHost: string;
-  qrHost?: string; // non-tunnel modes: host to encode in the QR (undefined ⇒ offline fallback)
-  tunnel?: string; // tunnel modes: provider to spawn (the QR comes from the tunnel URL)
+function withAuth(base: string): string {
+  const u = new URL(base);
+  u.searchParams.set("token", TOKEN);
+  u.searchParams.set("defaultProvider", defaultProvider);
+  return u.toString();
 }
 
-function resolveAccess(): Access {
-  const a = (process.env.ACCESS || "lan").toLowerCase();
-  if (a === "lan") return { label: "LAN (same Wi-Fi)", bindHost: "0.0.0.0", qrHost: lanAddress() };
-  if (a === "local" || a === "localhost")
+const urlFor = (host: string, port: number): string => withAuth(`http://${host}:${port}`);
+const appUrlFromBase = (base: string): string => withAuth(base);
+
+interface Bind {
+  label: string;
+  bindHost: string;
+  qrHost?: string; // direct modes: host to encode in the QR (undefined => offline fallback)
+}
+
+function resolveBind(): Bind {
+  const raw = (process.env.BIND_HOST ?? "auto").trim().toLowerCase();
+  const b = raw === "auto" ? (publicAccess || publicBase ? "local" : "lan") : raw;
+  if (b === "lan") return { label: "LAN (same Wi-Fi)", bindHost: "0.0.0.0", qrHost: lanAddress() };
+  if (b === "local" || b === "localhost")
     return { label: "local only (same machine)", bindHost: "127.0.0.1", qrHost: "localhost" };
-  if (a === "tailscale") {
+  if (b === "tailscale") {
     const ts = tailscaleAddress();
     if (!ts) {
-      console.error("ACCESS=tailscale but no Tailscale (100.64/10) address found — is Tailscale up?");
+      console.error("BIND_HOST=tailscale but no Tailscale (100.64/10) address found — is Tailscale up?");
       process.exit(1);
     }
     return { label: "Tailscale (private tailnet)", bindHost: ts, qrHost: ts };
   }
-  // "tailscale-funnel" is the canonical name (makes the Tailscale relationship
-  // visible next to ACCESS=tailscale); "funnel" is accepted as shorthand since
-  // it matches the CLI verb.
-  if (a === "tailscale-funnel" || a === "funnel")
-    return { label: "Tailscale Funnel (public HTTPS)", bindHost: "127.0.0.1", tunnel: "funnel" };
-  if (exposeProviderNames().includes(a)) {
-    // Loopback-only local bind: the tunnel reaches us over 127.0.0.1, so the
-    // port is never exposed on the LAN — only the intended public URL is.
-    return { label: `${a} (public tunnel)`, bindHost: "127.0.0.1", tunnel: a };
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(b)) {
+    return { label: `${b} only`, bindHost: b, qrHost: b === "0.0.0.0" ? lanAddress() : b };
   }
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(a)) return { label: `${a} only`, bindHost: a, qrHost: a };
-  const tunnels = ["tailscale-funnel", ...exposeProviderNames().filter((n) => n !== "funnel")];
-  console.error(
-    `error: unknown ACCESS "${a}". Use: lan, local, tailscale, ${tunnels.join(", ")}, or a literal IP.`,
-  );
+  console.error(`error: unknown BIND_HOST "${raw}". Use: auto, lan, local, tailscale, or a literal IP.`);
   return process.exit(1);
 }
 
-// BIND/EXPOSE were merged into ACCESS; warn rather than silently ignore them.
-if (!process.env.ACCESS && (process.env.BIND || process.env.EXPOSE)) {
-  console.error("note: BIND/EXPOSE were merged into a single ACCESS (e.g. ACCESS=tailscale-funnel). Ignoring the old vars.");
-}
+const bind = resolveBind();
 
-const access = resolveAccess();
-
-const server = app.listen(PORT, access.bindHost, async () => {
+const server = app.listen(listenPort, bind.bindHost, async () => {
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : listenPort;
   console.log("");
   console.log(`  even-better v${VERSION}`);
-  console.log(`  Mux   : ${getMux().name}`);
-  console.log(`  Access: ${access.label}`);
-  if (access.tunnel) console.log(`  Local : http://127.0.0.1:${PORT}  (public URL below)`);
-  console.log(`  Token : ${TOKEN}`);
-  console.log(`  Log   : ${eventLogPath}`);
+  console.log(`  Instance : ${INSTANCE_ID}`);
+  console.log(`  Mux      : ${getMux().name}`);
+  console.log(`  Bind     : ${bind.label}`);
+  console.log(`  Local    : http://${bind.bindHost === "0.0.0.0" ? "127.0.0.1" : bind.bindHost}:${actualPort}`);
+  if (basePaths.length > 0) console.log(`  Paths    : ${basePaths.join(", ")}`);
+  if (publicAccess) console.log(`  Public   : ${publicAccess}`);
+  console.log(`  Token    : ${TOKEN}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
+  console.log(`  Log mode : ${logMode}`);
+  console.log(`  Log      : ${writesEventLog ? eventLogPath : "off"}`);
   console.log("");
   try {
     const agents = await refreshAgents();
-    if (!defaultProviderPinned) {
-      const target = agents.find((a) => a.focused) ?? agents[0];
-      defaultProvider = providerForAgent(target?.agent);
-    }
+    const target = agents.find((a) => a.focused) ?? agents[0];
+    defaultProvider = providerForAgent(target?.agent);
     for (const a of agents) {
       console.log(`  agent : ${a.agent} pane=${a.paneId} status=${a.status} cwd=${a.cwd}`);
     }
@@ -434,16 +508,30 @@ const server = app.listen(PORT, access.bindHost, async () => {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
   }
 
-  if (access.tunnel) {
-    // The tunnel prints the one QR itself, once its public URL is up.
-    startExpose(access.tunnel, PORT, appUrlFromBase);
+  if (publicBase) {
+    const url = appUrlFromBase(publicBase);
+    console.log("");
+    console.log(`  Scan to connect · ${url}`);
+    if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
     return;
   }
-  const host = access.qrHost ?? "localhost";
-  if (!access.qrHost) console.log("  (no LAN address found — showing localhost, which a phone can't reach)");
+
+  if (publicAccess) {
+    // The public-access provider prints the one QR itself, once its URL is up.
+    startExpose(publicAccess, actualPort, appUrlFromBase, {
+      fallbackPath: funnelFallbackPath,
+      instanceId: INSTANCE_ID,
+      qrEnabled,
+    });
+    return;
+  }
+
+  const host = bind.qrHost ?? "localhost";
+  if (!bind.qrHost) console.log("  (no LAN address found — showing localhost, which a phone can't reach)");
   console.log("");
-  console.log(`  Scan to connect · ${urlFor(host)}`);
-  if (process.env.NO_QR !== "1") qrcodeTerminal.generate(urlFor(host), { small: true }, (code) => console.log(code));
+  const url = urlFor(host, actualPort);
+  console.log(`  Scan to connect · ${url}`);
+  if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
 });
 
 // Tear down both the bridges and the multiplexer (cmux holds a long-lived
@@ -455,7 +543,7 @@ function teardown(): void {
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
-    console.error(`[bridge] port ${PORT} already in use — is another bridge running?`);
+    console.error(`[bridge] port ${process.env.PORT} already in use — choose another PORT or leave it unset for auto.`);
   } else {
     console.error(`[bridge] server error: ${err.message}`);
   }

@@ -27,8 +27,8 @@ consequences — this is the first thing to check when "my agent doesn't show up
 | Mux + agent | Setup | Effect of the hook / gotcha |
 |---|---|---|
 | **cmux + claude** | none — automatic | cmux ships `cmux-claude-wrapper`; a per-surface PATH shim (`$TMPDIR/cmux-cli-shims/<surface>/claude`) intercepts `claude` and injects `--settings {hooks:…}` at launch. **claude-only** — there is no codex wrapper/shim. |
-| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `~/.codex/hooks.json` (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch (fires `SessionStart`/`UserPromptSubmit` lazily). |
-| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (🟢 `src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
+| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `$CODEX_HOME/hooks.json`, or `~/.codex/hooks.json` when unset (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch (fires `SessionStart`/`UserPromptSubmit` lazily). |
+| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (🟢 `src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
 
 **Discovery is hook-only for cmux but screen-based for herdr, so a missing hook
 means different things:**
@@ -76,7 +76,7 @@ Shared helper `typeAndSubmit(mux, id, text)` (`src/multiplexer.ts`) composes
 ## 2. herdr
 
 **Transport.** JSON-RPC over a Unix socket, one request line → one response line.
-Path: `HERDR_SOCKET_PATH` else `~/.config/herdr/herdr.sock` (`src/herdr.ts`).
+Path: `~/.config/herdr/herdr.sock` (`src/herdr.ts`).
 🟢 The full CLI is documented by `herdr <sub> --help`; the raw protocol lives at
 `herdr.dev/docs/socket-api/`.
 
@@ -135,7 +135,7 @@ it's unaffected, but **do not quote `1-1` as a literal**.
 
 **Transport.** The `cmux` CLI talks to the running app over a control socket
 (`CMUX_SOCKET_PATH` else `~/.local/state/cmux/cmux.sock`). even-better shells the
-CLI (`CMUX_BIN` else the app bundle else PATH) and detects liveness with
+CLI (the app bundle else PATH) and detects liveness with
 **`cmux ping`** (`cmuxAvailable`, `src/cmux.ts`) — a probe, not a hard-coded
 socket path, because the default path differs by build.
 

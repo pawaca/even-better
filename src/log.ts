@@ -1,11 +1,26 @@
 import { appendFileSync } from "node:fs";
 
+export type LogMode = "off" | "normal" | "debug" | "trace";
+
+function resolveLogMode(): LogMode {
+  const mode = (process.env.LOG ?? "normal").trim().toLowerCase();
+  if (mode === "off" || mode === "normal" || mode === "debug" || mode === "trace") return mode;
+  console.error(`error: invalid LOG "${process.env.LOG}". Use: off, normal, debug, or trace.`);
+  return process.exit(1);
+}
+
+export const logMode = resolveLogMode();
+
 // Every message exchanged with the app is appended here as one JSON line:
 // {"t":"<iso>","dir":"out"|"in","sessionId":"w1:pQ","msg":{...}}
 // "out" = SSE event pushed to the app, "in" = HTTP request from the app,
 // "diag" = internal diagnostics (blocked-menu parsing, permission attempts).
 export const eventLogPath =
-  process.env.EVENT_LOG ?? "/tmp/even-better-events.log";
+  process.env.LOG_FILE ?? `/tmp/even-better-${process.env.INSTANCE_ID ?? process.pid}.events.log`;
+
+export const writesEventLog = logMode !== "off";
+export const tracesStream = logMode === "trace";
+export const logsVerboseSse = logMode === "trace";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -45,6 +60,9 @@ export function logEvent(
   sessionId: string,
   msg: unknown,
 ): void {
+  if (!writesEventLog) return;
+  const type = isRecord(msg) && typeof msg.type === "string" ? msg.type : "";
+  if (logMode === "normal" && dir === "out" && type === "text_delta") return;
   const line = JSON.stringify({ t: new Date().toISOString(), dir, sessionId, msg: sanitizeForLog(msg) });
   try {
     // Synchronous append preserves emission order in the log. Async appendFile

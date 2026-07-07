@@ -21,9 +21,8 @@ const AGENTS = ["claude", "codex"] as const;
 
 const CMUX_HOME = join(homedir(), ".cmuxterm");
 
-/** Resolve the cmux binary: CMUX_BIN, then PATH, then the macOS app bundle. */
+/** Resolve the cmux binary: the macOS app bundle, then PATH. */
 function resolveCmuxBin(): string {
-  if (process.env.CMUX_BIN) return process.env.CMUX_BIN;
   const bundled = "/Applications/cmux.app/Contents/Resources/bin/cmux";
   if (existsSync(bundled)) return bundled;
   return "cmux";
@@ -31,9 +30,8 @@ function resolveCmuxBin(): string {
 
 const CMUX_BIN = resolveCmuxBin();
 
-/** The cmux binary exists — CMUX_BIN, the macOS app bundle, or `cmux` on PATH. */
+/** The cmux binary exists — the macOS app bundle, or `cmux` on PATH. */
 function cmuxBinExists(): boolean {
-  if (process.env.CMUX_BIN) return existsSync(process.env.CMUX_BIN);
   if (existsSync("/Applications/cmux.app/Contents/Resources/bin/cmux")) return true;
   return (process.env.PATH ?? "")
     .split(delimiter)

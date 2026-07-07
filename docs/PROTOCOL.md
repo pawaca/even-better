@@ -107,8 +107,8 @@ All under `/api`, bearer-token auth (`?token=` or `Authorization: Bearer`).
 
 **Auth:** the stream mounts under the same bearer middleware as all `/api`;
 EventSource cannot set headers, so it requires `?token=`. even-better uses
-`timingSafeEqual` + a **persisted** token (survives QR re-scan); the package uses
-plain `!==` + an ephemeral per-process token.
+`timingSafeEqual` + an ephemeral per-process token unless `BRIDGE_TOKEN` is set
+explicitly; the package uses plain `!==` + an ephemeral per-process token.
 
 ### Reconnect / resume — measured
 
@@ -146,8 +146,8 @@ Diagnosed live via the `src/sse.ts` logging read off the server pane with
 
 **Intentional deviations from 0.8.1 (do not revert):** last-20 replay cap;
 immediate `status` snapshot pushed on connect (else an app connecting while idle
-waits forever for a transition); `retry: 2000` + socket-error logging; persisted +
-timing-safe token; always-500 `/prompt` errors; stubbed `/update-check` &
+waits forever for a transition); `retry: 2000` + socket-error logging; timing-safe
+token comparison; always-500 `/prompt` errors; stubbed `/update-check` &
 `/sessions/:id/history`; no `/debug/*` or `/metrics` routes.
 
 ## Host limitation: one agent type per connection

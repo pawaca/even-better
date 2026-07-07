@@ -8,14 +8,14 @@ received and why a pane used a particular content source.
 Start from the server banner:
 
 ```bash
-PORT=3457 BRIDGE_TOKEN=test-token EVENT_LOG=/tmp/even-better-events.log pnpm start
+PORT=3457 BRIDGE_TOKEN=test-token LOG_FILE=/tmp/even-better-events.log pnpm start
 ```
 
 The banner prints:
 
-- the selected `ACCESS` mode and local/public URL
+- the instance id, local bind, actual local port, and local/public URL
 - the token encoded in the QR
-- the `EVENT_LOG` path
+- the `LOG` mode and `LOG_FILE` path
 - the herdr agents discovered by `agent.list`, including `agent`, `pane_id`,
   `agent_status`, and `cwd`
 
@@ -30,7 +30,8 @@ pane it targets.
 The bridge always prefers a structured transcript:
 
 - Claude: `~/.claude/projects/*/<session>.jsonl`
-- Codex: `${CODEX_HOME:-~/.codex}/sessions/**/rollout-*<session>.jsonl`
+- Codex: `$CODEX_HOME/sessions/**/rollout-*<session>.jsonl`, or
+  `~/.codex/sessions/**/rollout-*<session>.jsonl` when `CODEX_HOME` is unset
 
 `ScreenTimeline` is only a fallback while herdr has not exposed
 `agent_session.value` yet, or when the matching transcript file cannot be found.
@@ -47,16 +48,15 @@ If a Codex pane unexpectedly stays on screen scraping:
 1. Check the startup banner has `agent : codex pane=...`.
 2. Check herdr is reporting an agent session id for that pane. If herdr has no
    session id yet, the bridge cannot find a transcript and will keep probing.
-3. Check the rollout file exists under `${CODEX_HOME:-~/.codex}/sessions`.
-4. If you run Codex with a custom home, start the bridge with the same
-   `CODEX_HOME`.
-5. Watch the console for `tailing codex transcript ...`. Until that appears,
+3. Check the rollout file exists under `$CODEX_HOME/sessions` or
+   `~/.codex/sessions`.
+4. Watch the console for `tailing codex transcript ...`. Until that appears,
    dedup/filter behavior is the screen fallback, not structured transcript
    behavior.
 
-## Reading EVENT_LOG
+## Reading LOG_FILE
 
-`EVENT_LOG` is JSONL. Each line looks like:
+`LOG_FILE` is JSONL. Each line looks like:
 
 ```json
 {"t":"2026-07-06T00:00:00.000Z","dir":"out","sessionId":"w1:p1","msg":{"type":"tool_start"}}
@@ -86,8 +86,9 @@ user_prompt -> text_delta/tool_start/tool_end... -> result -> status(idle)
 idle, the app can treat that text as new activity. The bridge drains and flushes
 queued output before emitting `result` and then idle.
 
-High-volume text rows can be omitted from the file with `EVENT_LOG_TEXT=0`.
-Console stream tracing can be silenced with `DEBUG_STREAM=0`.
+`LOG=normal` omits high-volume `text_delta` rows. `LOG=debug` records the full
+JSONL stream. `LOG=trace` also prints capture/send/drop stream tracing and SSE
+verbose output to the console.
 
 ## Duplicate Output
 
@@ -106,7 +107,7 @@ Structured transcript dedupe is intentionally narrow:
 When output looks duplicated, first identify the source:
 
 1. If the console says `tailing ... transcript`, inspect the corresponding
-   transcript lines and `EVENT_LOG`.
+   transcript lines and `LOG_FILE`.
 2. If not, the pane is still on `ScreenTimeline`; enable default stream tracing
    and look for `capture`, `send`, and `drop` lines in the console.
 
@@ -118,7 +119,7 @@ can briefly report idle between tool calls.
 
 If the app appears stuck:
 
-1. Check `EVENT_LOG` for a final `result` followed by `status` with
+1. Check `LOG_FILE` for a final `result` followed by `status` with
    `state: "idle"`.
 2. If `result` is missing, check whether herdr is still reporting `working` or
    `blocked`.
@@ -130,35 +131,50 @@ If the app appears stuck:
 
 ## Tailscale and Funnel
 
-Use `ACCESS=tailscale` when the phone is on your tailnet. The bridge binds to
-the 100.64/10 Tailscale address and prints a private tailnet QR.
+Use `BIND_HOST=tailscale` when the phone is on your tailnet. The bridge binds
+to the 100.64/10 Tailscale address and prints a private tailnet QR.
 
-Use `ACCESS=funnel` or `ACCESS=tailscale-funnel` when the phone cannot run a
+Use `PUBLIC_ACCESS=tailscale-funnel` when the phone cannot run a
 Tailscale client. Requirements:
 
 - `tailscale` CLI is installed and logged in
 - the tailnet permits Funnel for the machine
 - Tailscale Funnel has been enabled in the admin console once
 
-The bridge runs `tailscale funnel <PORT>`, waits for a public
-`https://*.ts.net` URL, appends the token query, and prints one QR. If no URL is
-seen after 15 seconds, the server prints the tunnel output. Common causes are a
-disabled Funnel policy, an unauthenticated CLI, or a Tailscale daemon that is not
-running.
+The bridge starts on an auto-selected local port, runs Tailscale Funnel against
+that local port, waits for a public `https://*.ts.net` URL, appends the token
+query, and prints one QR. If no URL is seen after 15 seconds, the server prints
+the tunnel output. Common causes are a disabled Funnel policy, an
+unauthenticated CLI, or a Tailscale daemon that is not running.
 
-Funnel cleanup is intentional: on process exit the bridge runs
-`tailscale funnel reset` so the local port is not left publicly exposed.
+Public access providers proxy to `127.0.0.1`, so `PUBLIC_ACCESS` must use the
+default `BIND_HOST=auto` or an explicit loopback bind. Do not combine it with
+`BIND_HOST=lan`, `BIND_HOST=tailscale`, or another non-loopback interface.
 
-Cloudflare quick tunnels (`ACCESS=cloudflared`, `trycloudflare.com`) are not
+Funnel cleanup is targeted: on process exit the bridge runs the matching
+`tailscale funnel --https=<port> [--set-path=<path>] off`. It must not run
+`tailscale funnel reset`, because multiple bridge instances can share the same
+Tailscale node.
+
+The bridge selects one free public Funnel port from `443`, `8443`, and `10000`,
+so up to three public bridge instances can coexist without URL paths. If those
+ports are already occupied by Funnel, it falls back to mounting the instance at
+`/eb/<INSTANCE_ID>/` and prints a warning because the app must preserve the
+scanned URL path as its API base. Concurrent Funnel startups serialize this slot
+selection with a local lock so two instances do not claim the same public port.
+
+Cloudflare quick tunnels (`PUBLIC_ACCESS=cloudflared`, `trycloudflare.com`) are not
 recommended for this app because they do not stream Server-Sent Events reliably.
-Use a named Cloudflare Tunnel if Cloudflare is required.
+Use a named Cloudflare Tunnel if Cloudflare is required. Named tunnels and other
+external proxies require a fixed `PORT` because the bridge cannot update their
+backend target when `PORT=auto` chooses a new local port.
 
 ## Manual Smoke Check
 
 For a quick manual check without adding a full E2E harness:
 
 ```bash
-PORT=3457 BRIDGE_TOKEN=test-token EVENT_LOG=/tmp/even-better-events.log pnpm start
+PORT=3457 BRIDGE_TOKEN=test-token LOG_FILE=/tmp/even-better-events.log pnpm start
 npx tsx scripts/app-sim.ts 3457 test-token <pane-id> /tmp/even-better-sim.jsonl
 ```
 
