@@ -89,6 +89,14 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** A session cmux still lists whose process is gone AND that is not marked
+ *  restorable — a stale zombie to hide. A dead pid with `isRestorable === true`
+ *  is a hibernated/resumable session (cmux intentionally killed the idle process
+ *  and can bring it back — see cmux Agent Hibernation), so it is kept. */
+function isStaleZombie(e: HookSessionEntry): boolean {
+  return e.pid !== undefined && !pidAlive(e.pid) && e.isRestorable !== true;
+}
+
 /** Agent session ids arrive prefixed by source (`claude-<uuid>`) in events but
  *  bare (`<uuid>`) in the hook file and `checkpoint_id`. Reduce to the trailing
  *  UUID so both forms compare equal; fall back to a leading-source strip. */
@@ -118,6 +126,7 @@ interface HookSessionEntry {
   workspaceId?: string;
   sessionId?: string;
   pid?: number;
+  isRestorable?: boolean;
 }
 interface HookSessionsFile {
   activeSessionsBySurface?: Record<string, { sessionId?: string }>;
@@ -204,10 +213,16 @@ export class CmuxMultiplexer implements Multiplexer {
         if (entry.workspaceId) workspaceToSurface.set(entry.workspaceId, surfaceId);
       };
       // Primary index: cmux's own active-surface map (restorable sessions live
-      // here without a surfaceId of their own).
+      // here without a surfaceId of their own). cmux does not always prune a
+      // session whose process has exited, so skip stale zombies — but keep a
+      // dead-pid entry that is `isRestorable` (hibernated/resumable), else we'd
+      // hide a session the user can still select and resume.
       for (const [surfaceId, ref] of Object.entries(active)) {
         const sid = ref?.sessionId;
-        if (sid) add(surfaceId, bareSession(sid), sessions[sid] ?? {});
+        if (!sid) continue;
+        const entry = sessions[sid] ?? {};
+        if (isStaleZombie(entry)) continue;
+        add(surfaceId, bareSession(sid), entry);
       }
       // A `--command`-launched agent lands only in `sessions` with its own
       // surfaceId+pid and is absent from activeSessionsBySurface, so also take
@@ -218,13 +233,15 @@ export class CmuxMultiplexer implements Multiplexer {
         }
       }
       // Some restored/hook-captured sessions appear only in the workspace index.
-      // An active-index entry is live, so no pid check — resolve its surface from
-      // the sessions map. (Ones with no surfaceId anywhere can't be placed here
-      // without cmux topology; event-time routing still reaches them by session.)
+      // Resolve the surface from the sessions map, skipping stale zombies here too
+      // (restorable dead-pid entries are kept). (Ones with no surfaceId anywhere
+      // can't be placed without cmux topology; event routing still reaches them.)
       for (const ref of Object.values(data.activeSessionsByWorkspace ?? {})) {
         const sid = ref?.sessionId;
         const entry = sid ? sessions[sid] : undefined;
-        if (sid && entry?.surfaceId) add(entry.surfaceId, bareSession(sid), entry);
+        if (!sid || !entry?.surfaceId) continue;
+        if (isStaleZombie(entry)) continue;
+        add(entry.surfaceId, bareSession(sid), entry);
       }
     }
     this.surfaceMeta = surfaceMeta;
