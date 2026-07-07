@@ -122,16 +122,16 @@ Map `TodoWrite` to `task_progress`, not a tool bubble (`todoProgress` in
 `pnpm check` is necessary but not sufficient — the real test is what the glasses
 app receives. Drive it end-to-end:
 
-1. Start a test server on an unused port: `PORT=3457 BRIDGE_TOKEN=... EVENT_LOG=/tmp/eb.log pnpm start`.
+1. Start a test server on an unused port: `PORT=3457 BRIDGE_TOKEN=... LOG_FILE=/tmp/eb.log LOG=trace pnpm start`.
 2. Create a scratch herdr workspace (`workspace.create` over the socket), run
    `claude` in its pane, let the session-probe upgrade it to the transcript.
 3. Record with `scripts/app-sim.ts <port> <token> <paneId> <out.jsonl>`, drive a
-   turn via `POST /api/prompt`, then inspect the recording (or `EVENT_LOG`) to
+   turn via `POST /api/prompt`, then inspect the recording (or `LOG_FILE`) to
    confirm the exact events the app got.
 4. Clean up the scratch workspace (`workspace.close`) afterward.
 
-`EVENT_LOG` records every in/out/diag line — the first place to look when the
-glasses show something wrong. `DEBUG_STREAM=1` traces capture/send/drop per line.
+`LOG_FILE` records every in/out/diag line — the first place to look when the
+glasses show something wrong. `LOG=trace` traces capture/send/drop per line.
 
 ## Extension roadmap — what NOT to build yet
 

@@ -7,7 +7,7 @@ import {
   type StatusSub,
 } from "./multiplexer.js";
 import { emit } from "./sse.js";
-import { logEvent } from "./log.js";
+import { logEvent, tracesStream } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcript.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
@@ -22,10 +22,10 @@ import {
   type ParsedMenu,
 } from "./parse.js";
 
-// Human-readable stream tracing on the server console (set DEBUG_STREAM=0 to
-// silence): dim = new screen content captured by the diff, green = what is
-// actually sent to the glasses app, yellow = lines suppressed and why.
-const STREAM_LOG = process.env.DEBUG_STREAM !== "0";
+// Human-readable stream tracing on the server console (LOG=trace): dim = new
+// screen content captured by the diff, green = what is actually sent to the
+// glasses app, yellow = lines suppressed and why.
+const STREAM_LOG = tracesStream;
 const USE_COLOR = process.stdout.isTTY === true;
 function paint(code: string, s: string): string {
   return USE_COLOR ? `\x1b[${code}m${s}\x1b[0m` : s;

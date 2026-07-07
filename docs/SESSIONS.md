@@ -61,7 +61,9 @@ session **id**, never a path — see [§3](#3-no-transcript-path).)
 
 ## 2. Codex — `CodexTranscriptTimeline` (`src/codex-transcript.ts`)
 
-**Location** 🔵: `${CODEX_HOME:-~/.codex}/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
+**Location** 🔵: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
+when `CODEX_HOME` is set, otherwise
+`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
 
 **How located** ⚙️: `findCodexSessionFile` (`src/codex-transcript.ts:20-44`) does a
 recursive DFS under `sessions/` matching the filename suffix `<sessionId>.jsonl`
@@ -156,7 +158,7 @@ python3 -c "import json,sys,collections; f=sorted(__import__('glob').glob('$HOME
 # is_error present on error tool_result blocks (Claude Code source: query.ts::createUserMessage)
 
 # Codex: model lives in turn_context, tokens in token_count
-ROLL=$(ls -t ${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl 2>/dev/null | head -1)
+ROLL=$(ls -t "${CODEX_HOME:-$HOME/.codex}"/sessions/**/rollout-*.jsonl 2>/dev/null | head -1)
 grep -o '"model":"[^"]*"' "$ROLL" | sort -u          # turn_context.payload.model
 # codex source: codex-rs/protocol/src/protocol.rs::TurnContextItem (pub model: String)
 

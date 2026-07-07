@@ -41,6 +41,24 @@ t("sum-tool-search", summarizeTool("tool_search", {query:"github issue"}), "Sear
 t("sum-unknown", summarizeTool("MyTool", {q:"hello"}), "MyTool: hello");
 
 // Codex interactive rollout transcript
+const oldCodexHome = process.env.CODEX_HOME;
+const tempCodexHome = mkdtempSync(join(tmpdir(), "even-better-codex-home-"));
+try {
+  const sessionId = "custom-home-session";
+  const sessionDir = join(tempCodexHome, "sessions", "2026", "07", "07");
+  const sessionFile = join(sessionDir, `rollout-2026-07-07T00-00-00-${sessionId}.jsonl`);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(sessionFile, "");
+  process.env.CODEX_HOME = tempCodexHome;
+  t("codex-home-session-file", findCodexSessionFile(sessionId), sessionFile);
+} finally {
+  if (oldCodexHome === undefined) {
+    delete process.env.CODEX_HOME;
+  } else {
+    process.env.CODEX_HOME = oldCodexHome;
+  }
+  rmSync(tempCodexHome, { recursive: true, force: true });
+}
 t("codex-user", parseCodexEntry(JSON.stringify({
   type: "response_item",
   payload: {type:"message", role:"user", content:[{type:"input_text", text:"实现 codex 支持"}]},
@@ -220,19 +238,3 @@ const tokenCount = (input: number, output: number, lastInput = input, lastOutput
 t("codex-usage-total-first", codexParser.parse(tokenCount(10, 3)), [{t:"usage", usage:{input:10, output:3}}]);
 t("codex-usage-total-dupe", codexParser.parse(tokenCount(10, 3)), []);
 t("codex-usage-total-delta", codexParser.parse(tokenCount(15, 4, 99, 99)), [{t:"usage", usage:{input:5, output:1}}]);
-
-const oldCodexHome = process.env.CODEX_HOME;
-const tmpCodexHome = mkdtempSync(join(tmpdir(), "even-better-codex-home-"));
-try {
-  const sessionId = "019f-test-session";
-  const sessionDir = join(tmpCodexHome, "sessions", "2026", "07", "06");
-  const sessionFile = join(sessionDir, `rollout-test-${sessionId}.jsonl`);
-  mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(sessionFile, "");
-  process.env.CODEX_HOME = tmpCodexHome;
-  t("codex-home-session-file", findCodexSessionFile(sessionId), sessionFile);
-} finally {
-  if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
-  else process.env.CODEX_HOME = oldCodexHome;
-  rmSync(tmpCodexHome, { recursive: true, force: true });
-}

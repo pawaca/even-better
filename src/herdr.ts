@@ -10,9 +10,7 @@ import type {
   StatusSub,
 } from "./multiplexer.js";
 
-const SOCKET_PATH =
-  process.env.HERDR_SOCKET_PATH ??
-  path.join(os.homedir(), ".config", "herdr", "herdr.sock");
+const SOCKET_PATH = path.join(os.homedir(), ".config", "herdr", "herdr.sock");
 
 // Methods we allow ourselves to call. Anything server.* is deliberately
 // excluded — reload/stop/handoff must never be reachable from the bridge.

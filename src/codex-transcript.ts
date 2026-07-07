@@ -5,9 +5,10 @@ import type { AgentEvent, Timeline } from "./spine.js";
 import { JsonlTail } from "./jsonl-tail.js";
 
 // Tail a Codex interactive rollout transcript
-// (~/.codex/sessions/YYYY/MM/DD/rollout-...<id>.jsonl). This is the structured
-// source for Codex panes; screen scraping remains only a fallback before herdr
-// detects the session id or when a rollout file cannot be found.
+// ($CODEX_HOME/sessions/YYYY/MM/DD/rollout-...<id>.jsonl, or
+// ~/.codex/sessions when CODEX_HOME is unset). This is the structured source for
+// Codex panes; screen scraping remains only a fallback before herdr detects the
+// session id or when a rollout file cannot be found.
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -17,9 +18,13 @@ function readDirEntries(dir: string) {
   return readdirSync(dir, { withFileTypes: true });
 }
 
+function codexHome(): string {
+  const raw = process.env.CODEX_HOME?.trim();
+  return raw ? raw : join(homedir(), ".codex");
+}
+
 export function findCodexSessionFile(sessionId: string): string | null {
-  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-  const root = join(codexHome, "sessions");
+  const root = join(codexHome(), "sessions");
   if (!existsSync(root)) return null;
   const stack = [root];
   while (stack.length) {
