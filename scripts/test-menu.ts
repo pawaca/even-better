@@ -46,6 +46,31 @@ t("codex: allow=1, allowAlways=2, deny=3",
 const ct = parseMenu(codexTrust);
 t("codex trust: 2 options parsed", ct?.options.length === 2, ct?.options);
 
+// A codex prompt echo reuses the `›` prefix and may be numbered. It must not be
+// taken as the menu when a real dialog is also on screen (take the last valid
+// contiguous 1,2,3 run), nor on its own.
+const echoAboveMenu = [
+  "› 1. update the readme",
+  "  2. add more tests",
+  "",
+  "  Would you like to run the following command?",
+  "  $ touch x.txt",
+  "› 1. Yes, proceed (y)",
+  "  2. Yes, and don't ask again (p)",
+  "  3. No, and tell Codex what to do differently (esc)",
+].join("\n");
+const em = parseMenu(echoAboveMenu);
+t("echo above menu: picks the real 3-option dialog, not the echo",
+  em?.options.length === 3 && em?.options[0]?.label.startsWith("Yes, proceed"), em?.options);
+
+// A lone numbered prompt echo (not a contiguous ≥2 run from 1) is not a menu.
+const echoOnly = ["› 1. do the thing I asked", "", "some other output line"].join("\n");
+t("lone numbered echo → not a menu", parseMenu(echoOnly) === null);
+
+// Scattered / non-sequential N. lines are not a menu.
+const scattered = ["1. alpha", "unrelated line", "unrelated line", "3. gamma"].join("\n");
+t("non-sequential scattered → not a menu", parseMenu(scattered) === null);
+
 if (failed) {
   console.log(`\n${failed} failed`);
   process.exit(1);
