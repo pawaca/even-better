@@ -46,8 +46,9 @@ it works. Codex's is not:
   while a non-YOLO codex approval is **open** (unanswered) only `PreToolUse` fires
   — **zero `PermissionRequest`**; `Stop` arrives at *turn end*, after the menu is
   answered and gone, never while it is visible. (The trigger poll relies on this:
-  a `Stop`/idle hook while `codexScreenAwaiting` is reconciled against the screen
-  so a live menu is never dismissed — `reconcileCodexIdle`.)
+  a `Stop`/idle hook that arrives while `codexScreenAwaiting` is **remembered**, not
+  applied, and the turn ends only when the poll sees the approval footer clear — so
+  a live menu is never dismissed, and a transient read failure can't lose the idle.)
 - **Those approval `EventMsg`s are not persisted to the rollout jsonl.**
   `wrapped_protocol_event_type(ExecApprovalRequest) → None`
   (🟢 `codex-rs/rollout-trace/src/protocol_event.rs`). So even-better's transcript
@@ -70,10 +71,11 @@ setup — a coarse screen detector is the only option (like herdr's screen-based
 
 **Implemented (🔵 verified end-to-end).** `CmuxMultiplexer` screen-polls a **busy
 codex** surface every 700 ms (`CODEX_APPROVAL_POLL_MS`) and, when
-`isCodexApprovalScreen()` matches (`parse.ts` — anchored on the "Would you like to
-…" question / "enter to confirm … esc to cancel" footer, not the option text),
-routes `awaiting` with kind `permission`; when the prompt clears it routes back to
-`busy`. The bridge is untouched — its normal `onStatus(awaiting) → emitBlockedMenu
+`isCodexApprovalScreen()` matches (`parse.ts` — requires **both** the "enter to
+confirm … esc to cancel" footer **and** a live `parseMenu` menu, so neither footer
+text in ordinary output nor a numbered prose list triggers it), routes `awaiting`
+with kind `permission`; when the prompt clears it routes back to `busy` (or `idle`
+if a turn-end `Stop` was withheld while the menu was up). The bridge is untouched — its normal `onStatus(awaiting) → emitBlockedMenu
 → parseMenu → permission_request` path builds the request, and the fixed-key
 response answers it. Verified live: a `touch`/`apply_patch` approval surfaced as a
 `permission_request` and an API `allow` ran the command and cleared the menu.

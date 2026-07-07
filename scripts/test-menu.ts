@@ -77,20 +77,32 @@ const codexExecScreen = [
   "  Would you like to run the following command?",
   "  $ touch x.txt",
   "› 1. Yes, proceed (y)",
+  "  2. Yes, and don't ask again (p)",
+  "  3. No, and tell Codex what to do differently (esc)",
   "  Press enter to confirm or esc to cancel",
 ].join("\n");
 const codexPatchScreen = [
   "  Would you like to make the following edits?",
   "› 1. Yes, proceed (y)",
+  "  2. Yes, and don't ask again for these files (a)",
+  "  3. No, and tell Codex what to do differently (esc)",
   "  Press enter to confirm or esc to cancel",
 ].join("\n");
 const codexWorking = ["• Working (12s • esc to interrupt)", "› Run the shell command"].join("\n");
-// The question can appear in ordinary prose — it must NOT trigger without the footer.
+// The question can appear in ordinary prose — must NOT trigger without a dialog.
 const codexProse = ["• I can do that. Would you like to run the tests first?", "› _"].join("\n");
+// The footer STRING can appear in output (e.g. editing this repo's docs) — but
+// without an adjacent numbered menu it is not a live dialog.
+const codexFooterEcho = [
+  "• Edited docs/PERMISSIONS.md (+1 -0)",
+  '    "Press enter to confirm or esc to cancel" is the anchor.',
+  "› _",
+].join("\n");
 t("codex approval screen (exec) detected", isCodexApprovalScreen(codexExecScreen));
 t("codex approval screen (patch) detected", isCodexApprovalScreen(codexPatchScreen));
 t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
 t("codex prose 'would you like to run' (no footer) not detected", !isCodexApprovalScreen(codexProse));
+t("codex footer text in output (no menu) not detected", !isCodexApprovalScreen(codexFooterEcho));
 t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {

@@ -157,6 +157,10 @@ export class CmuxMultiplexer implements Multiplexer {
   private readonly codexPollTimers = new Map<string, NodeJS.Timeout>();
   private readonly codexPollInFlight = new Set<string>();
   private readonly codexScreenAwaiting = new Set<string>();
+  // A terminal (Stop/idle) hook that arrived while an approval was on screen —
+  // applied when the poll observes the footer clear, so the turn ends even
+  // though the hook was withheld to protect the live menu.
+  private readonly codexIdlePending = new Set<string>();
 
   private proc: ChildProcess | null = null;
   private buf = "";
@@ -410,9 +414,11 @@ export class CmuxMultiplexer implements Multiplexer {
     if (isCodex && this.codexScreenAwaiting.has(surface)) {
       // The screen shows a codex approval — it is authoritative. A busy hook must
       // not clobber the open menu; a Stop/idle (codex fires it at turn end, after
-      // the menu is answered — never while it is open) is reconciled against the
-      // screen so a still-visible dialog is never dismissed by a stray hook.
-      if (status !== "busy") void this.reconcileCodexIdle(surface, status);
+      // the menu is answered — never while open) is REMEMBERED, not applied, and
+      // the poll ends the turn when it sees the footer clear. Deferring via a flag
+      // (not a screen read) keeps a transient read failure from losing the only
+      // idle signal and stranding the pane as busy.
+      if (status !== "busy") this.codexIdlePending.add(surface);
       return;
     }
     this.routeStatus(surface, status);
@@ -420,22 +426,6 @@ export class CmuxMultiplexer implements Multiplexer {
       if (status === "busy") this.startCodexApprovalPoll(surface);
       else this.stopCodexApprovalPoll(surface);
     }
-  }
-
-  /** A codex idle/Stop arrived while we believe an approval is open. Confirm
-   *  against the screen before ending the turn: footer gone ⇒ the menu was
-   *  answered, route it through; footer still present ⇒ the hook is stale
-   *  relative to a live dialog, keep awaiting + the poll. */
-  private async reconcileCodexIdle(surface: string, status: PaneStatus): Promise<void> {
-    let screen = "";
-    try {
-      screen = await this.read(surface, 0);
-    } catch {
-      return; // read failed — keep state; a later poll tick reconciles
-    }
-    if (isCodexApprovalScreen(screen)) return; // menu still up — ignore the hook
-    this.stopCodexApprovalPoll(surface); // clears codexScreenAwaiting + timer
-    this.routeStatus(surface, status);
   }
 
   /** Screen-poll a busy codex surface for an approval prompt and synthesize
@@ -453,6 +443,7 @@ export class CmuxMultiplexer implements Multiplexer {
     this.codexPollTimers.delete(surface);
     this.codexPollInFlight.delete(surface);
     this.codexScreenAwaiting.delete(surface);
+    this.codexIdlePending.delete(surface);
   }
 
   private async checkCodexApproval(surface: string): Promise<void> {
@@ -473,7 +464,13 @@ export class CmuxMultiplexer implements Multiplexer {
       this.routeStatus(surface, "awaiting");
     } else if (!blocked && this.codexScreenAwaiting.has(surface)) {
       this.codexScreenAwaiting.delete(surface);
-      this.routeStatus(surface, "busy"); // menu cleared → back to working
+      if (this.codexIdlePending.delete(surface)) {
+        // A Stop/idle arrived while the menu was up → the turn has ended.
+        this.stopCodexApprovalPoll(surface);
+        this.routeStatus(surface, "idle");
+      } else {
+        this.routeStatus(surface, "busy"); // menu cleared mid-turn → still working
+      }
     }
   }
 

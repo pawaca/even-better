@@ -194,15 +194,16 @@ export function classifyMenu(menu: ParsedMenu): ClassifiedMenu {
  * Codex delivers exec/patch approvals as protocol `EventMsg`s (not hooks) that
  * never reach the cmux event stream and are not persisted to the rollout, so the
  * screen is the only signal the cmux backend can see (see `docs/PERMISSIONS.md`).
- * Anchored on the decision **footer** ("enter to confirm … esc to cancel"),
- * which is unique to codex's live approval dialog — conversational prose and the
- * trust prompt lack it. The "Would you like to …" question is NOT used on its own:
- * it can appear in ordinary agent/user text, and the poll scans the whole
- * viewport, so matching it alone would spuriously drive the pane to `awaiting`.
- * The bridge still runs `parseMenu` to build the actual request.
+ * Requires BOTH the decision **footer** ("enter to confirm … esc to cancel")
+ * AND a live numbered menu (`parseMenu`). Neither alone is safe: the footer
+ * string can appear in ordinary output (even this repo's docs contain it) and a
+ * numbered list alone can be prose — but together, in the same viewport, they
+ * mark a live approval dialog. The "Would you like to …" question is deliberately
+ * not used, as it too shows up in normal agent/user text.
  */
 export function isCodexApprovalScreen(text: string): boolean {
-  return /enter to confirm\b/i.test(text) && /esc to cancel\b/i.test(text);
+  const footer = /enter to confirm\b/i.test(text) && /esc to cancel\b/i.test(text);
+  return footer && parseMenu(text) !== null;
 }
 
 /** Extract "[Opus 4.6]"-style model names from a claude pane status bar. */
