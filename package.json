@@ -4,6 +4,7 @@
   "description": "Mirror terminal coding-agent sessions to Even Realities G2 glasses (even-terminal protocol compatible)",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@10.12.4",
   "license": "MIT",
   "author": "pawaca",
   "repository": {
