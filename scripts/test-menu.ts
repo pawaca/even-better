@@ -121,6 +121,19 @@ const codexFooterFarFromMarkedEcho = [
   "  2. my second idea",
 ].join("\n");
 t("codex footer far from marked › row not detected", !isCodexApprovalScreen(codexFooterFarFromMarkedEcho));
+// A stale `› N.` echo above the live dialog must not hide the real approval row.
+const codexStaleEchoAboveDialog = [
+  "› 1. an earlier numbered prompt echo",
+  "  2. still visible from before",
+  "  ...more output...",
+  "  Would you like to run the following command?",
+  "  $ touch x.txt",
+  "› 1. Yes, proceed (y)",
+  "  2. Yes, and don't ask again (p)",
+  "  3. No, and tell Codex what to do differently (esc)",
+  "  Press enter to confirm or esc to cancel",
+].join("\n");
+t("codex live dialog below a stale › echo IS detected", isCodexApprovalScreen(codexStaleEchoAboveDialog));
 t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {

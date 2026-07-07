@@ -203,13 +203,15 @@ export function classifyMenu(menu: ParsedMenu): ClassifiedMenu {
  * but only a live dialog puts a marked row directly above the footer.
  */
 export function isCodexApprovalScreen(text: string): boolean {
+  if (parseMenu(text) === null) return false;
   const lines = text.split("\n");
-  const selIdx = lines.findIndex((l) => /^[ \t]*[❯›][ \t]*\d[.)]\s/.test(l));
-  if (selIdx < 0) return false;
-  const below = lines.slice(selIdx, selIdx + 8).join("\n");
-  const footerBelow =
-    /enter to confirm\b/i.test(below) && /esc to cancel\b/i.test(below);
-  return footerBelow && parseMenu(text) !== null;
+  // ANY marked option row with the footer just below it — not only the first,
+  // since a stale `› N.` prompt echo can sit above the live dialog.
+  return lines.some((line, i) => {
+    if (!/^[ \t]*[❯›][ \t]*\d[.)]\s/.test(line)) return false;
+    const below = lines.slice(i, i + 8).join("\n");
+    return /enter to confirm\b/i.test(below) && /esc to cancel\b/i.test(below);
+  });
 }
 
 /** Extract "[Opus 4.6]"-style model names from a claude pane status bar. */
