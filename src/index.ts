@@ -39,36 +39,6 @@ function parsePort(raw: string | undefined): number {
 
 const listenPort = parsePort(process.env.PORT);
 
-const removedEnv = [
-  "ACCESS",
-  "BIND",
-  "EXPOSE",
-  "TUNNEL",
-  "BASE_PATH",
-  "FUNNEL_MODE",
-  "FUNNEL_PORT",
-  "FUNNEL_PROGRAM_PATH",
-  "EVENT_LOG",
-  "EVENT_LOG_TEXT",
-  "DEBUG_STREAM",
-  "VERBOSE",
-  "NO_QR",
-  "PINGGY_PROGRAM_PATH",
-  "BORE_PROGRAM_PATH",
-  "NGROK_PROGRAM_PATH",
-  "CLOUDFLARED_PROGRAM_PATH",
-  "HERDR_SOCKET_PATH",
-  "CMUX_BIN",
-  "DEFAULT_PROVIDER",
-].filter((name) => process.env[name] !== undefined);
-if (removedEnv.length > 0) {
-  console.error(
-    `error: removed environment variable(s): ${removedEnv.join(", ")}. ` +
-      "Use PORT, BIND_HOST, PUBLIC_ACCESS, PUBLIC_BASE_URL, BRIDGE_TOKEN, LOG, LOG_FILE, QR, or MUX.",
-  );
-  process.exit(1);
-}
-
 // Pick the multiplexer once, before anything touches it. MUX=cmux|herdr forces
 // it. Otherwise: use whichever backend is present; if BOTH are, never guess —
 // prompt on a TTY, and fail fast without one (so nothing silently mirrors the
