@@ -18,23 +18,27 @@ Provenance tags: 🟢 **source** (read the backend's own code) · 🔵 **live**
 
 ---
 
-## Prerequisites: agent hooks must be installed, or the agent is invisible
+## Prerequisites: agent hooks, and what breaks without them
 
-even-better can only mirror an agent the **multiplexer already tracks**, which
-depends on per-agent hooks. This is the first thing to check when "my agent
-doesn't show up." (🔵 verified on this machine + 🟢 cmux source.)
+The two backends **discover agents differently**, so a missing hook has different
+consequences — this is the first thing to check when "my agent doesn't show up."
+(🔵 verified on this machine · 🟢 source.)
 
-| Mux + agent | Setup | How / gotcha |
+| Mux + agent | Setup | Effect of the hook / gotcha |
 |---|---|---|
 | **cmux + claude** | none — automatic | cmux ships `cmux-claude-wrapper`; a per-surface PATH shim (`$TMPDIR/cmux-cli-shims/<surface>/claude`) intercepts `claude` and injects `--settings {hooks:…}` at launch. **claude-only** — there is no codex wrapper/shim. |
-| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `~/.codex/hooks.json` (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch: it fires `SessionStart`/`UserPromptSubmit` lazily, so a fresh unprompted codex stays invisible until you send it one message. |
-| **herdr + claude** | install herdr's hook | `~/.claude/settings.json` → `herdr-agent-state.sh session`. |
-| **herdr + codex** | install herdr's hook | `~/.codex/hooks.json` → `herdr-agent-state.sh session`. |
+| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `~/.codex/hooks.json` (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch (fires `SessionStart`/`UserPromptSubmit` lazily). |
+| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (🟢 `src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
 
-So: **cmux auto-detects claude only; codex needs a one-time install + a first
-prompt. herdr needs a per-agent hook install for both.** Without the hook the
-agent's session id never reaches the mux socket, so `sessionId()`/`listPanes()`
-cannot see it.
+**Discovery is hook-only for cmux but screen-based for herdr, so a missing hook
+means different things:**
+- **cmux:** no hook ⇒ the pane is not an agent to cmux ⇒ absent from `listPanes()`
+  ⇒ **invisible** to even-better. (codex additionally needs its first prompt before
+  it registers at all.)
+- **herdr:** no hook ⇒ herdr still detects and exposes the pane, and even-better
+  mirrors it through the `ScreenTimeline` fallback (`src/bridge.ts:173-188`) — you
+  lose only the **structured transcript** (`sessionId()` is empty, so it scrapes
+  the screen instead of tailing the jsonl). Visible, lower fidelity.
 
 **Related host limitation (one agent type at a time):** even-better's `/api/info`
 and the QR connection report a **single** `provider` — the focused/first agent's
