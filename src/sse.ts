@@ -93,16 +93,16 @@ export function sseHandler(req: Request, res: Response): void {
   res.write(":ok\n\n");
   // Tell the app's EventSource to reconnect fast (default is 3s) and keep
   // retrying persistently — so a dropped stream re-establishes quickly once the
-  // client notices it's dead (the keepalive below is what makes it notice).
+  // client (app) notices it's dead.
   res.write("retry: 2000\n\n");
 
-  // Enable TCP keepalive so a phone that drops off the network (Wi-Fi loss,
-  // suspend) is detected by the OS in ~tens of seconds instead of TCP's default
-  // multi-minute retransmit timeout — otherwise the server keeps writing SSE
-  // frames into a half-open socket the glass can no longer receive. The socket
-  // `error` (ECONNRESET / ETIMEDOUT / EPIPE) is also the clearest signal of how
-  // the connection actually died; `close` still drives cleanup below.
-  res.socket?.setKeepAlive(true, 15_000);
+  // Log HOW the socket dies (ECONNRESET / ETIMEDOUT / EPIPE) for drop diagnosis.
+  // NOTE: the server cannot quickly detect a half-open socket (phone off Wi-Fi):
+  // the 15s heartbeat below keeps the socket non-idle so TCP keepalive never
+  // fires, and Node exposes no TCP_USER_TIMEOUT, so an unacked write only fails
+  // on TCP's multi-minute retransmit timeout. Un-sticking a frozen session is
+  // therefore an app-side concern — here we just log and let `req.on('close')`
+  // clean up. `retry:` above helps the app reconnect fast once IT notices.
   res.socket?.on("error", (err) => {
     const code = (err as NodeJS.ErrnoException).code ?? err.message;
     console.warn(`[sse] socket error session=${sessionId} code=${code}`);

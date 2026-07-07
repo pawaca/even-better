@@ -76,7 +76,7 @@ All under `/api`, bearer-token auth (`?token=` or `Authorization: Bearer`).
 ## Transport & resilience
 
 > **Verified as of:** even-terminal **0.8.1** (official npm dist, `routes/events.js`)
-> · even-better `main` + uncommitted `src/sse.ts` (keepalive + diagnostics).
+> · even-better `main` + `src/sse.ts` (`retry:` + diagnostics).
 > even-better is **byte-compatible** with the package's SSE format; every
 > difference below is an **intentional deviation — do not "fix" it back**.
 
@@ -97,11 +97,13 @@ All under `/api`, bearer-token auth (`?token=` or `Authorization: Bearer`).
 
 **Dead-client / half-open detection:**
 - Both drop a client on a `res.write()` throw (broadcast + heartbeat paths) and on `req.on('close')`.
-- ⚠️ **Deviation (even-better):** `res.socket.setKeepAlive(true, 15000)` + a
-  `socket.on('error')` errno log — so the OS notices a half-open socket (phone off
-  Wi-Fi / suspended) in ~tens of seconds instead of TCP's multi-minute default.
-  Plus diagnostics: `reconnect_gap`, connection `lived` time, "no live client —
-  buffering", "write/heartbeat failed — dropped dead client". (`src/sse.ts`, recent.)
+- ⚠️ **Deviation (even-better):** a `socket.on('error')` errno log (how the socket
+  died) + diagnostics — `reconnect_gap`, connection `lived` time, "no live client —
+  buffering", "write/heartbeat failed — dropped dead client". (`src/sse.ts`)
+- ❗ The server **cannot quickly detect a half-open socket** (phone off Wi-Fi): the
+  15s heartbeat keeps the socket non-idle so TCP keepalive never fires, and Node
+  exposes no `TCP_USER_TIMEOUT`, so an unacked write only fails on TCP's
+  multi-minute retransmit timeout. This is an **app-side limitation** — see below.
 
 **Auth:** the stream mounts under the same bearer middleware as all `/api`;
 EventSource cannot set headers, so it requires `?token=`. even-better uses
@@ -126,25 +128,26 @@ Diagnosed live via the `src/sse.ts` logging read off the server pane with
   connected, so it never reconnects → the glass session goes unresponsive and
   **stays stuck** (tapping into it does nothing). Losing a few buffered events is
   acceptable; a stuck session is not.
-- **Strategy (chosen — no gap replay):** make the *server* kill the zombie socket
-  fast so the app's EventSource notices and auto-reconnects:
-  - `res.socket.setKeepAlive(true, 15000)` — the OS detects the dead peer in ~tens
-    of seconds instead of TCP's multi-minute default; the socket then errors/closes
-    → the app's EventSource fires `error` → auto-reconnect. (`src/sse.ts`)
-  - `retry: 2000` written on connect — EventSource reconnects in 2s and keeps
-    retrying. (`src/sse.ts`)
-  - We deliberately **accept the small reconnect content loss** — the priority is
-    "reconnect and keep interacting", not lossless history.
-- **Status:** keepalive + `retry:` are live in `src/sse.ts`. Confirmation = watch
-  the server pane's `[sse]` log through the next flaky-network episode for a
-  `socket error code=ETIMEDOUT` followed by a prompt reconnect, instead of a stuck
-  session. (So far: clean disconnects reconnect fine at ~27s; no half-open event
-  captured yet.)
+- **What the server can and can't do:** un-sticking a frozen session is
+  fundamentally **app-side** — the server can neither detect the half-open socket
+  quickly (above) nor force a network-down phone's EventSource to reconnect (a
+  server-side close can't reach it until the network returns, and even then the
+  app must notice). So the server does the honest, limited things:
+  - `retry: 2000` on connect — once the app *does* notice the drop, EventSource
+    reconnects in 2s and keeps retrying. (`src/sse.ts`)
+  - `socket.on('error')` + `[sse]` diagnostics for observability. (`src/sse.ts`)
+  - No gap replay — reconnect content loss is acceptable; the priority is
+    "reconnect and keep interacting".
+- **Observed:** clean disconnects (the common case — app backgrounds / graceful
+  close) reconnect on their own fine, including a 16-min inactivity gap. **Zero
+  half-open events captured** across the diagnostic window — so the "stuck" case is
+  rarer here than the clean-drop case, and it remains an app-side gap the server
+  cannot close.
 
 **Intentional deviations from 0.8.1 (do not revert):** last-20 replay cap;
 immediate `status` snapshot pushed on connect (else an app connecting while idle
-waits forever for a transition); TCP keepalive + `retry: 2000` + socket-error
-logging; persisted + timing-safe token; always-500 `/prompt` errors; stubbed `/update-check` &
+waits forever for a transition); `retry: 2000` + socket-error logging; persisted +
+timing-safe token; always-500 `/prompt` errors; stubbed `/update-check` &
 `/sessions/:id/history`; no `/debug/*` or `/metrics` routes.
 
 ## Not wire types
