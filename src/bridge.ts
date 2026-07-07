@@ -573,9 +573,12 @@ export class PaneBridge {
 
     if (kind === "question") {
       // Prefer the structured form from the transcript (exact question + per-option
-      // descriptions); the response arrow-navigates by option index, which matches
-      // the on-screen order claude renders. Fall back to the screen parse.
-      const structured = structuredQuestion(pendingTool);
+      // descriptions) — but only when the screen also parses, because the response
+      // verifies dismissal via `menuGone()`/`parseMenu`: if the screen were
+      // unparseable we'd acknowledge a possibly-lost keypress as answered. When
+      // both are present, the transcript gives richer labels and the screen keeps
+      // verification honest. Option order matches, so arrow-nav by index is valid.
+      const structured = menu ? structuredQuestion(pendingTool) : null;
       if (structured) {
         this.currentMenu = {
           title: structured.question,
