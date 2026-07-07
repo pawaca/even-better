@@ -26,7 +26,7 @@ Every approval is three separable steps. They have **different** data sources an
 |-------|--------|-------|-------------------------|
 | ① Trigger | ✅ hook | ❌ **absent** (see root cause) | mux event (`agent.hook.*`) |
 | ② Present · command | ✅ | ✅ | transcript `function_call`/`tool_use` (`pendingTools`) |
-| ② Present · options | ✅ | ✅ *(needs the `[❯›]` fix)* | **screen** `parseMenu` (`src/parse.ts`) |
+| ② Present · options | ✅ | ⏳ **PR #11** (not on `main`) | **screen** `parseMenu` (`src/parse.ts`) |
 | ③ Respond | ✅ | ✅ | fixed keys `Enter`/`Down+Enter`/`Escape` |
 
 ---
@@ -71,10 +71,15 @@ setup — a coarse screen detector is the only option (like herdr's screen-based
 
 Both layers were driven end-to-end against real TUIs this session.
 
-**② `parseMenu` / `classifyMenu` — 5 real menus, all correct** (after the
-`[❯›]` marker fix; the highlighted option is marked `❯` by claude and `›` by
+> **Codex ② depends on PR #11** (the `[❯›]` marker + contiguity fix). On `main`
+> today `parseMenu` skips only `❯`, so a codex approval still mis-parses — the
+> codex rows below hold **once #11 merges**, not before.
+
+**② `parseMenu` / `classifyMenu` — 5 real menus, all correct** (with the `[❯›]`
+marker fix from #11; the highlighted option is marked `❯` by claude and `›` by
 codex — the regex must skip both, else it is dropped and a 3-option approval
-mis-parses into a 2-option "question"):
+mis-parses into a 2-option "question". #11 also requires a contiguous 1,2,3 run
+so a `›` prompt echo is not read as a menu):
 
 | menu | opts | classify |
 |------|------|----------|
