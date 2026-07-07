@@ -4,16 +4,30 @@
   "description": "Mirror terminal coding-agent sessions to Even Realities G2 glasses (even-terminal protocol compatible)",
   "type": "module",
   "private": true,
+  "packageManager": "pnpm@10.12.4",
   "license": "MIT",
   "author": "pawaca",
   "repository": {
     "type": "git",
     "url": "https://github.com/pawaca/even-better"
   },
+  "keywords": [
+    "even-realities",
+    "g2-glasses",
+    "ar-glasses",
+    "claude-code",
+    "codex",
+    "coding-agent",
+    "terminal",
+    "sse",
+    "herdr",
+    "cmux"
+  ],
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "tsx scripts/test.ts"
   },
   "engines": {
     "node": ">=18"
