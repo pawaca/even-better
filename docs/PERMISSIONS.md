@@ -24,7 +24,7 @@ Every approval is three separable steps. They have **different** data sources an
 
 | Layer | claude | codex | source even-better uses |
 |-------|--------|-------|-------------------------|
-| ① Trigger | ✅ hook | ❌ **absent** (see root cause) | mux event (`agent.hook.*`) |
+| ① Trigger | ✅ hook | ✅ **screen poll** (`cmux.ts`) — no hook exists (root cause) | claude: mux event; codex: `isCodexApprovalScreen` |
 | ② Present · command | ✅ | ✅ | transcript `function_call`/`tool_use` (`pendingTools`) |
 | ② Present · options | ✅ | ⏳ **PR #11** (not on `main`) | **screen** `parseMenu` (`src/parse.ts`) |
 | ③ Respond | ✅ | ✅ | fixed keys `Enter`/`Down+Enter`/`Escape` |
@@ -64,6 +64,17 @@ via hooks; codex exposes them via a protocol/TUI channel even-better does not
 subscribe to.** A structured codex trigger is therefore **not available** in this
 setup — a coarse screen detector is the only option (like herdr's screen-based
 `AgentState`, which cmux lacks).
+
+**Implemented (🔵 verified end-to-end).** `CmuxMultiplexer` screen-polls a **busy
+codex** surface every 700 ms (`CODEX_APPROVAL_POLL_MS`) and, when
+`isCodexApprovalScreen()` matches (`parse.ts` — anchored on the "Would you like to
+…" question / "enter to confirm … esc to cancel" footer, not the option text),
+routes `awaiting` with kind `permission`; when the prompt clears it routes back to
+`busy`. The bridge is untouched — its normal `onStatus(awaiting) → emitBlockedMenu
+→ parseMenu → permission_request` path builds the request, and the fixed-key
+response answers it. Verified live: a `touch`/`apply_patch` approval surfaced as a
+`permission_request` and an API `allow` ran the command and cleared the menu.
+Transient `read-screen` failures are tolerated (the poll keeps state and retries).
 
 ---
 
@@ -128,11 +139,10 @@ shortcuts (`y`/`p`/`esc`), so the fallback is codex-suboptimal — but the prima
 ## Design direction
 
 - **claude:** hook trigger (stable) + parse + fixed keys — solid as-is.
-- **codex:** trigger **must** be a coarse screen detector (no structured source
-  exists — §① above); keep ② command from the transcript + ③ fixed keys. The
-  stability goal is a *coarse, anchor-based* "is an approval prompt on screen"
-  check (e.g. "Would you like to run" / "Would you like to make the following
-  edits"), **not** parsing options to decide blocked-ness.
+- **codex:** ✅ trigger is a coarse anchor-based screen poll (`isCodexApprovalScreen`,
+  §① above) — no structured source exists; ② command from the transcript + ③ fixed
+  keys. The anchor is the "Would you like to …" question / confirm-cancel footer,
+  **not** the option text, so it survives menu-layout changes.
 - Demote `parseMenu` from "core dependency" toward "confirmation": present the
   **fixed** decision triad + transcript command; use the screen only for the
   coarse trigger and, where needed, question-form option labels.

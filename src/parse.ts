@@ -189,6 +189,21 @@ export function classifyMenu(menu: ParsedMenu): ClassifiedMenu {
   return { kind: "question" };
 }
 
+/**
+ * Coarse detector for a codex tool-approval prompt on the visible screen.
+ * Codex delivers exec/patch approvals as protocol `EventMsg`s (not hooks) that
+ * never reach the cmux event stream and are not persisted to the rollout, so the
+ * screen is the only signal the cmux backend can see (see `docs/PERMISSIONS.md`).
+ * Anchored on the decision **footer** + the "Would you like to …" question — not
+ * the option text — to stay coarse and robust; the bridge still runs `parseMenu`
+ * to build the actual request.
+ */
+export function isCodexApprovalScreen(text: string): boolean {
+  const footer = /enter to confirm\b/i.test(text) && /esc to cancel\b/i.test(text);
+  const question = /would you like to (run|make|apply|allow)\b/i.test(text);
+  return footer || question;
+}
+
 /** Extract "[Opus 4.6]"-style model names from a claude pane status bar. */
 export function extractModel(text: string): string {
   const m = text.match(/\[((?:Opus|Sonnet|Haiku|Fable)[^\]]{0,20})\]/);

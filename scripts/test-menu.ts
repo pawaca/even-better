@@ -1,4 +1,4 @@
-import { parseMenu, classifyMenu } from "../src/parse.js";
+import { parseMenu, classifyMenu, isCodexApprovalScreen } from "../src/parse.js";
 
 let failed = 0;
 const t = (name: string, cond: boolean, detail?: unknown) => {
@@ -70,6 +70,25 @@ t("lone numbered echo → not a menu", parseMenu(echoOnly) === null);
 // Scattered / non-sequential N. lines are not a menu.
 const scattered = ["1. alpha", "unrelated line", "unrelated line", "3. gamma"].join("\n");
 t("non-sequential scattered → not a menu", parseMenu(scattered) === null);
+
+// isCodexApprovalScreen — the coarse codex-blocked trigger (codex approvals are
+// not hooks, so the screen is the only signal).
+const codexExecScreen = [
+  "  Would you like to run the following command?",
+  "  $ touch x.txt",
+  "› 1. Yes, proceed (y)",
+  "  Press enter to confirm or esc to cancel",
+].join("\n");
+const codexPatchScreen = [
+  "  Would you like to make the following edits?",
+  "› 1. Yes, proceed (y)",
+  "  Press enter to confirm or esc to cancel",
+].join("\n");
+const codexWorking = ["• Working (12s • esc to interrupt)", "› Run the shell command"].join("\n");
+t("codex approval screen (exec) detected", isCodexApprovalScreen(codexExecScreen));
+t("codex approval screen (patch) detected", isCodexApprovalScreen(codexPatchScreen));
+t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
+t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {
   console.log(`\n${failed} failed`);

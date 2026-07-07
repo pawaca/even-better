@@ -3,6 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { Multiplexer, PaneInfo, PaneStatus, StatusSub } from "./multiplexer.js";
+import { isCodexApprovalScreen } from "./parse.js";
+
+// Codex delivers exec/patch approvals as protocol events, not hooks (and they are
+// not persisted to the rollout), so — unlike claude — no `agent.hook.*` marks the
+// pane blocked. While a codex surface is busy we poll its screen for the approval
+// prompt and synthesize `awaiting`; the bridge's normal blocked-menu path handles
+// the rest. See docs/PERMISSIONS.md §① for why the screen is the only signal.
+const CODEX_APPROVAL_POLL_MS = 700;
 
 // cmux Multiplexer: drives the `cmux` CLI over its Unix socket. Pane identity is
 // a surface UUID. Unlike herdr — which detects agents from the PTY and hands us
@@ -143,6 +151,12 @@ export class CmuxMultiplexer implements Multiplexer {
   private sessionToSurface = new Map<string, string>();
   private workspaceToSurface = new Map<string, string>();
   private focusedSurface: string | undefined;
+  // Codex-only: screen-poll a busy codex surface for an approval prompt (no hook
+  // exists for it). `codexScreenAwaiting` tracks surfaces we drove to awaiting
+  // from the screen so a stale busy hook can't clobber an open menu.
+  private readonly codexPollTimers = new Map<string, NodeJS.Timeout>();
+  private readonly codexPollInFlight = new Set<string>();
+  private readonly codexScreenAwaiting = new Set<string>();
 
   private proc: ChildProcess | null = null;
   private buf = "";
@@ -391,7 +405,55 @@ export class CmuxMultiplexer implements Multiplexer {
 
   private routeAgent(payload: Record<string, unknown>, status: PaneStatus): void {
     const surface = this.surfaceForAgentEvent(payload);
-    if (surface) this.routeStatus(surface, status);
+    if (!surface) return;
+    const isCodex = this.surfaceMeta.get(surface)?.agent === "codex";
+    // A busy hook must not overwrite an approval menu we detected on screen —
+    // the poll owns the awaiting state until the menu clears.
+    if (isCodex && status === "busy" && this.codexScreenAwaiting.has(surface)) return;
+    this.routeStatus(surface, status);
+    if (isCodex) {
+      if (status === "busy") this.startCodexApprovalPoll(surface);
+      else this.stopCodexApprovalPoll(surface);
+    }
+  }
+
+  /** Screen-poll a busy codex surface for an approval prompt and synthesize
+   *  `awaiting`/`busy` around it — codex has no approval hook (§① of
+   *  docs/PERMISSIONS.md). No-op for claude, whose hook is authoritative. */
+  private startCodexApprovalPoll(surface: string): void {
+    if (this.codexPollTimers.has(surface) || this.disposed) return;
+    const timer = setInterval(() => void this.checkCodexApproval(surface), CODEX_APPROVAL_POLL_MS);
+    this.codexPollTimers.set(surface, timer);
+  }
+
+  private stopCodexApprovalPoll(surface: string): void {
+    const t = this.codexPollTimers.get(surface);
+    if (t) clearInterval(t);
+    this.codexPollTimers.delete(surface);
+    this.codexPollInFlight.delete(surface);
+    this.codexScreenAwaiting.delete(surface);
+  }
+
+  private async checkCodexApproval(surface: string): Promise<void> {
+    if (this.codexPollInFlight.has(surface)) return; // reads can outlast the tick
+    this.codexPollInFlight.add(surface);
+    let screen = "";
+    try {
+      screen = await this.read(surface, 0);
+    } catch {
+      return; // transient read failure; keep current state, retry next tick
+    } finally {
+      this.codexPollInFlight.delete(surface);
+    }
+    const blocked = isCodexApprovalScreen(screen);
+    if (blocked && !this.codexScreenAwaiting.has(surface)) {
+      this.codexScreenAwaiting.add(surface);
+      this.lastKind.set(surface, "permission");
+      this.routeStatus(surface, "awaiting");
+    } else if (!blocked && this.codexScreenAwaiting.has(surface)) {
+      this.codexScreenAwaiting.delete(surface);
+      this.routeStatus(surface, "busy"); // menu cleared → back to working
+    }
   }
 
   private routeInteraction(payload: Record<string, unknown>, kind: "permission" | "question"): void {
@@ -409,6 +471,7 @@ export class CmuxMultiplexer implements Multiplexer {
   private routeStatus(surfaceId: string, status: PaneStatus): void {
     this.lastStatus.set(surfaceId, status);
     if (status === "closed") {
+      this.stopCodexApprovalPoll(surfaceId);
       this.surfaceMeta.delete(surfaceId);
       this.lastStatus.delete(surfaceId);
       this.lastKind.delete(surfaceId);
@@ -469,6 +532,8 @@ export class CmuxMultiplexer implements Multiplexer {
 
   dispose(): void {
     this.disposed = true;
+    for (const t of this.codexPollTimers.values()) clearInterval(t);
+    this.codexPollTimers.clear();
     this.proc?.kill();
     this.proc = null;
     this.listeners.clear();
