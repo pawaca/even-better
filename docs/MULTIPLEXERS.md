@@ -18,6 +18,33 @@ Provenance tags: 🟢 **source** (read the backend's own code) · 🔵 **live**
 
 ---
 
+## Prerequisites: agent hooks must be installed, or the agent is invisible
+
+even-better can only mirror an agent the **multiplexer already tracks**, which
+depends on per-agent hooks. This is the first thing to check when "my agent
+doesn't show up." (🔵 verified on this machine + 🟢 cmux source.)
+
+| Mux + agent | Setup | How / gotcha |
+|---|---|---|
+| **cmux + claude** | none — automatic | cmux ships `cmux-claude-wrapper`; a per-surface PATH shim (`$TMPDIR/cmux-cli-shims/<surface>/claude`) intercepts `claude` and injects `--settings {hooks:…}` at launch. **claude-only** — there is no codex wrapper/shim. |
+| **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `~/.codex/hooks.json` (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch: it fires `SessionStart`/`UserPromptSubmit` lazily, so a fresh unprompted codex stays invisible until you send it one message. |
+| **herdr + claude** | install herdr's hook | `~/.claude/settings.json` → `herdr-agent-state.sh session`. |
+| **herdr + codex** | install herdr's hook | `~/.codex/hooks.json` → `herdr-agent-state.sh session`. |
+
+So: **cmux auto-detects claude only; codex needs a one-time install + a first
+prompt. herdr needs a per-agent hook install for both.** Without the hook the
+agent's session id never reaches the mux socket, so `sessionId()`/`listPanes()`
+cannot see it.
+
+**Related host limitation (one agent type at a time):** even-better's `/api/info`
+and the QR connection report a **single** `provider` — the focused/first agent's
+type (`focusedOrFirstBridge`). `/api/sessions` returns *both* types (each tagged
+`provider`), but the connected app configures for one, so only that type's
+sessions surface on the glasses. To see the other agent, make it the focused agent
+(switch the host's type). Details in `docs/PROTOCOL.md`.
+
+---
+
 ## 1. The interface, mapped to both backends
 
 `Multiplexer` (`src/multiplexer.ts:39-67`): 7 required methods, 3 optional. Both
