@@ -204,10 +204,16 @@ export class CmuxMultiplexer implements Multiplexer {
         if (entry.workspaceId) workspaceToSurface.set(entry.workspaceId, surfaceId);
       };
       // Primary index: cmux's own active-surface map (restorable sessions live
-      // here without a surfaceId of their own).
+      // here without a surfaceId of their own). cmux does not always prune a
+      // session whose process has exited, so drop entries with a dead pid —
+      // otherwise even-better lists a zombie. (No-pid entries are restorable /
+      // not-yet-running, not dead; keep them.)
       for (const [surfaceId, ref] of Object.entries(active)) {
         const sid = ref?.sessionId;
-        if (sid) add(surfaceId, bareSession(sid), sessions[sid] ?? {});
+        if (!sid) continue;
+        const entry = sessions[sid] ?? {};
+        if (entry.pid && !pidAlive(entry.pid)) continue;
+        add(surfaceId, bareSession(sid), entry);
       }
       // A `--command`-launched agent lands only in `sessions` with its own
       // surfaceId+pid and is absent from activeSessionsBySurface, so also take
@@ -218,13 +224,15 @@ export class CmuxMultiplexer implements Multiplexer {
         }
       }
       // Some restored/hook-captured sessions appear only in the workspace index.
-      // An active-index entry is live, so no pid check — resolve its surface from
-      // the sessions map. (Ones with no surfaceId anywhere can't be placed here
-      // without cmux topology; event-time routing still reaches them by session.)
+      // Resolve the surface from the sessions map, dropping a dead pid here too.
+      // (Ones with no surfaceId anywhere can't be placed without cmux topology;
+      // event-time routing still reaches them by session.)
       for (const ref of Object.values(data.activeSessionsByWorkspace ?? {})) {
         const sid = ref?.sessionId;
         const entry = sid ? sessions[sid] : undefined;
-        if (sid && entry?.surfaceId) add(entry.surfaceId, bareSession(sid), entry);
+        if (!sid || !entry?.surfaceId) continue;
+        if (entry.pid && !pidAlive(entry.pid)) continue;
+        add(entry.surfaceId, bareSession(sid), entry);
       }
     }
     this.surfaceMeta = surfaceMeta;
