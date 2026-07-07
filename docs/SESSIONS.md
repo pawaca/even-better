@@ -52,10 +52,12 @@ session **id**, never a path — see [§3](#3-no-transcript-path).)
   `claude-opus-4-8`); `readClaudeModel` (`src/transcript.ts`) feeds `/api/info`,
   with the status-bar scrape (`extractModel`) kept only as a pre-session fallback —
   see [§4](#4-screen--structured).
-- Also available-but-unused: `AskUserQuestion` `tool_use.input.questions[]`
-  (`{question, header, multiSelect, options[].{label, description}}`) — richer
-  than the on-screen menu (has per-option `description`), captured into
-  `pendingTools` but not used to build the question — see [§4](#4-screen--structured).
+- 🟢✅ **`AskUserQuestion` `tool_use.input.questions[]` now builds the question.**
+  (`{question, header, multiSelect, options[].{label, description}}`) — richer than
+  the on-screen menu (exact question text + per-option `description`).
+  `structuredQuestion` (`src/bridge.ts`) builds the `user_question` from it for a
+  single-question form, falling back to the screen parse otherwise — see
+  [§4](#4-screen--structured).
 
 ---
 
@@ -134,7 +136,7 @@ dependencies and whether a structured source can replace them:
 | Screen dependency | Recovers | Structured source | Status |
 |---|---|---|---|
 | `extractModel` (`/api/info`) | model name (status-bar regex, claude-only → codex "Unknown") | claude `message.model`; codex `turn_context.payload.model` | ✅ **wired (PR #8)** — scrape is fallback-only |
-| `parseMenu`/`classifyMenu` for **AskUserQuestion** | question + option labels | claude `tool_use.input.questions[]` (already in `pendingTools`, has per-option `description`) | **available, unwired** |
+| `parseMenu`/`classifyMenu` for **AskUserQuestion** | question + option labels | claude `tool_use.input.questions[]` (in `pendingTools`, has per-option `description`) | ✅ **wired** (`structuredQuestion`) — screen is fallback |
 | `parseMenu`/`classifyMenu` for **plain permission menus** | menu title + Yes/No/allow-always option text | **none** — the TUI choice text is never in the jsonl | **none** (screen is sole source) |
 | `extractResult` (`emitTurnResult`) | final turn text | claude `lastProseBlock` / codex `turnResultText` (used first when a transcript exists) | **none needed** (only the pre-session-id window) |
 
@@ -142,9 +144,10 @@ dependencies and whether a structured source can replace them:
 `response_item.function_call_output`; prose via `lastProseBlock` before any screen
 fallback; all dedup/volatile/echo-suppression confined to `ScreenTimeline`.
 
-Wired in PR #8: `/api/info` model (`readClaudeModel`/`readCodexModel`) +
-`tool_result.is_error`. Still unwired: AskUserQuestion options from
-`tool_use.input.questions[]` (lower value / higher risk — deferred).
+Wired: `/api/info` model (`readClaudeModel`/`readCodexModel`) +
+`tool_result.is_error` (PR #8); AskUserQuestion options from
+`tool_use.input.questions[]` (`structuredQuestion`, screen fallback for
+multi-question or non-claude forms).
 
 ---
 
