@@ -110,14 +110,17 @@ export interface ParsedMenu {
 /**
  * Parse a numbered selection menu from a rendered TUI screen (claude/codex
  * permission prompts and AskUserQuestion forms both render as "N. label"
- * lists). Returns null when no plausible menu is on screen.
+ * lists). The highlighted option carries a selection marker — `❯` for claude,
+ * `›` for codex — which must be skipped, else that option is missed (and for a
+ * 3-option codex approval that mis-parses into a 2-option "question", verified
+ * live). Returns null when no plausible menu is on screen.
  */
 export function parseMenu(text: string): ParsedMenu | null {
   const lines = text.split("\n");
   const options: MenuOption[] = [];
   let firstOptionIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^\s*(?:❯\s*)?(\d)[.)]\s+(.+?)\s*$/);
+    const m = lines[i].match(/^\s*(?:[❯›]\s*)?(\d)[.)]\s+(.+?)\s*$/);
     if (m) {
       if (firstOptionIdx === -1) firstOptionIdx = i;
       options.push({ digit: m[1], label: m[2] });
