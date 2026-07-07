@@ -457,6 +457,10 @@ export class CmuxMultiplexer implements Multiplexer {
     } finally {
       this.codexPollInFlight.delete(surface);
     }
+    // The poll may have been stopped (idle/Stop/close) while this read was in
+    // flight — the snapshot is stale. Drop it rather than route on it, which
+    // could re-arm `awaiting` with no timer left to ever observe it clear.
+    if (!this.codexPollTimers.has(surface)) return;
     const blocked = isCodexApprovalScreen(screen);
     if (blocked && !this.codexScreenAwaiting.has(surface)) {
       this.codexScreenAwaiting.add(surface);

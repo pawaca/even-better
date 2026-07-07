@@ -194,18 +194,22 @@ export function classifyMenu(menu: ParsedMenu): ClassifiedMenu {
  * Codex delivers exec/patch approvals as protocol `EventMsg`s (not hooks) that
  * never reach the cmux event stream and are not persisted to the rollout, so the
  * screen is the only signal the cmux backend can see (see `docs/PERMISSIONS.md`).
- * Requires the decision **footer** ("enter to confirm … esc to cancel"), a
- * parseable menu, AND a **selected (`❯`/`›`-marked) option row** — the live
- * cursor of the chooser. Each guards a different false positive: the footer
- * string appears in ordinary output (even this repo's docs), and `parseMenu`
- * accepts unmarked numbered *prose* lists — but an echoed list has no selection
- * marker, so requiring the marked row ties detection to a real, live dialog.
+ * Ties detection to the live chooser *block*: a **selected (`❯`/`›`-marked)
+ * option row** with the "enter to confirm … esc to cancel" **footer a few lines
+ * below it** (the chooser renders options then the footer), plus a parseable
+ * menu. Each guard rules out a false positive that the others don't: the footer
+ * string appears in ordinary output (even this repo's docs); `parseMenu` accepts
+ * unmarked numbered *prose* lists; and `›` is also codex's input-prompt prefix —
+ * but only a live dialog puts a marked row directly above the footer.
  */
 export function isCodexApprovalScreen(text: string): boolean {
-  const footer = /enter to confirm\b/i.test(text) && /esc to cancel\b/i.test(text);
-  if (!footer) return false;
-  const selectedRow = /^[ \t]*[❯›][ \t]*\d[.)]\s/m.test(text);
-  return selectedRow && parseMenu(text) !== null;
+  const lines = text.split("\n");
+  const selIdx = lines.findIndex((l) => /^[ \t]*[❯›][ \t]*\d[.)]\s/.test(l));
+  if (selIdx < 0) return false;
+  const below = lines.slice(selIdx, selIdx + 8).join("\n");
+  const footerBelow =
+    /enter to confirm\b/i.test(below) && /esc to cancel\b/i.test(below);
+  return footerBelow && parseMenu(text) !== null;
 }
 
 /** Extract "[Opus 4.6]"-style model names from a claude pane status bar. */

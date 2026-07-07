@@ -112,6 +112,15 @@ t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
 t("codex prose 'would you like to run' (no footer) not detected", !isCodexApprovalScreen(codexProse));
 t("codex footer text in output (no menu) not detected", !isCodexApprovalScreen(codexFooterEcho));
 t("codex footer + unmarked prose list (no › row) not detected", !isCodexApprovalScreen(codexFooterPlusProseList));
+// Footer text far ABOVE a `› N.` prompt echo (codex reuses › for input) — not a
+// live dialog, since the footer isn't just below the marked row.
+const codexFooterFarFromMarkedEcho = [
+  "  docs note: press enter to confirm or esc to cancel.",
+  "  line", "  line", "  line", "  line", "  line", "  line", "  line", "  line",
+  "› 1. my first idea",
+  "  2. my second idea",
+].join("\n");
+t("codex footer far from marked › row not detected", !isCodexApprovalScreen(codexFooterFarFromMarkedEcho));
 t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
 
 if (failed) {
