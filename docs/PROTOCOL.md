@@ -4,9 +4,11 @@ even-better is a **clean-room** implementation of the wire protocol the stock
 Even app speaks with `@evenrealities/even-terminal` — there is no SDK dependency,
 so this file is the reference for what we actually emit and accept. The transport
 is plain JSON: outbound events are Server-Sent Events on `GET /api/events`
-(`id: <n>\ndata: <json>\n\n`, `id` enabling Last-Event-ID resume); inbound is
-ordinary HTTP. The `type` field is the whole contract — the app owns the visual,
-we only choose the type and fill its fields.
+(`id: <n>\ndata: <json>\n\n`); inbound is ordinary HTTP. Replay on reconnect is
+driven by `?needReplay=true` / `GET /messages?after=N`, **not** by `Last-Event-ID`
+(neither server honors it — see [Transport & resilience](#transport--resilience)).
+The `type` field is the whole contract — the app owns the visual, we only choose
+the type and fill its fields.
 
 ## Outbound (server → glasses, over SSE)
 
@@ -70,6 +72,80 @@ All under `/api`, bearer-token auth (`?token=` or `Authorization: Bearer`).
 | POST | `/permission-response` | answer a `permission_request` (`{ sessionId, decision }`) |
 | POST | `/question-response` | answer a `user_question` (`{ sessionId, answer }`) |
 | POST | `/interrupt` | send Escape to the pane (`{ sessionId }`) |
+
+## Transport & resilience
+
+> **Verified as of:** even-terminal **0.8.1** (official npm dist, `routes/events.js`)
+> · even-better `main` + uncommitted `src/sse.ts` (keepalive + diagnostics).
+> even-better is **byte-compatible** with the package's SSE format; every
+> difference below is an **intentional deviation — do not "fix" it back**.
+
+**SSE wire format** (must stay identical — the app's EventSource parser is fixed):
+- On connect: a comment line `:ok\n\n` **before anything else**.
+- Per message: `id: N\ndata: {json}\n\n`.
+- Heartbeat: `:heartbeat\n\n` every **15 s** per client; a write-throw drops the client.
+- Headers: `text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`,
+  `X-Accel-Buffering: no`, flushed before `:ok`.
+- Comment lines (`:ok`, `:heartbeat`) have no `id:`/`data:` — ignored by EventSource per spec (never dispatched as a message). Their real value is keeping idle-timeout network layers (proxies, NAT, mobile radios) from treating the connection as dead — a network-stack effect, **not** an EventSource-spec guarantee. (`src/sse.ts`)
+
+**Ring buffer & replay:**
+- Per-session FIFO, `MAX_MESSAGES_PER_SESSION = 500`, **in-memory only** (lost on restart).
+- Replay is triggered by `?needReplay=true` **only** — never delta-from-id.
+- ⚠️ **Deviation:** the package replays the *whole* buffer; even-better caps to the
+  **last 20** (`REPLAY_MAX`, `src/sse.ts`) to avoid flooding the glasses after a long
+  disconnect. Precise unbounded catch-up is available via `GET /api/messages?after=N`.
+
+**Dead-client / half-open detection:**
+- Both drop a client on a `res.write()` throw (broadcast + heartbeat paths) and on `req.on('close')`.
+- ⚠️ **Deviation (even-better):** `res.socket.setKeepAlive(true, 15000)` + a
+  `socket.on('error')` errno log — so the OS notices a half-open socket (phone off
+  Wi-Fi / suspended) in ~tens of seconds instead of TCP's multi-minute default.
+  Plus diagnostics: `reconnect_gap`, connection `lived` time, "no live client —
+  buffering", "write/heartbeat failed — dropped dead client". (`src/sse.ts`, recent.)
+
+**Auth:** the stream mounts under the same bearer middleware as all `/api`;
+EventSource cannot set headers, so it requires `?token=`. even-better uses
+`timingSafeEqual` + a **persisted** token (survives QR re-scan); the package uses
+plain `!==` + an ephemeral per-process token.
+
+### Reconnect / resume — measured
+
+Diagnosed live via the `src/sse.ts` logging read off the server pane with
+`cmux read-screen`:
+
+- The Even app **never sends `Last-Event-ID`** (`lastEventId=-` on every connect),
+  **never sets `needReplay=true`** on reconnect, and **never polls
+  `/messages?after`** for live sessions (3 `/messages` calls in a full day's log —
+  2 stale herdr sessions + 1 manual probe). So **on SSE reconnect the app receives
+  nothing from the gap**: append-only events (`text_delta`/`result`/`tool_*`)
+  buffered during a drop are lost; single-slot widgets (`status`/`running_stats`)
+  self-heal on the next emit. The app uses none of the three catch-up mechanisms,
+  so **no server-side replay can reach it** without a client change.
+- **The real failure is interactivity, not content.** A half-open SSE socket
+  (phone off Wi-Fi / suspended) leaves the app's EventSource believing it is still
+  connected, so it never reconnects → the glass session goes unresponsive and
+  **stays stuck** (tapping into it does nothing). Losing a few buffered events is
+  acceptable; a stuck session is not.
+- **Strategy (chosen — no gap replay):** make the *server* kill the zombie socket
+  fast so the app's EventSource notices and auto-reconnects:
+  - `res.socket.setKeepAlive(true, 15000)` — the OS detects the dead peer in ~tens
+    of seconds instead of TCP's multi-minute default; the socket then errors/closes
+    → the app's EventSource fires `error` → auto-reconnect. (`src/sse.ts`)
+  - `retry: 2000` written on connect — EventSource reconnects in 2s and keeps
+    retrying. (`src/sse.ts`)
+  - We deliberately **accept the small reconnect content loss** — the priority is
+    "reconnect and keep interacting", not lossless history.
+- **Status:** keepalive + `retry:` are live in `src/sse.ts`. Confirmation = watch
+  the server pane's `[sse]` log through the next flaky-network episode for a
+  `socket error code=ETIMEDOUT` followed by a prompt reconnect, instead of a stuck
+  session. (So far: clean disconnects reconnect fine at ~27s; no half-open event
+  captured yet.)
+
+**Intentional deviations from 0.8.1 (do not revert):** last-20 replay cap;
+immediate `status` snapshot pushed on connect (else an app connecting while idle
+waits forever for a transition); TCP keepalive + `retry: 2000` + socket-error
+logging; persisted + timing-safe token; always-500 `/prompt` errors; stubbed `/update-check` &
+`/sessions/:id/history`; no `/debug/*` or `/metrics` routes.
 
 ## Not wire types
 
