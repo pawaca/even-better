@@ -42,9 +42,12 @@ it works. Codex's is not:
   `ExecApprovalRequest` / `ApplyPatchApprovalRequest` are `EventMsg` variants; the
   `PermissionRequest` **hook** is invoked only from `mcp_tool_call.rs`
   (`run_permission_request_hooks`) — i.e. **MCP tools only**. 🟢 So the injected
-  cmux/herdr hook never fires for a command/patch approval. 🔵 Confirmed live: an
-  open non-YOLO codex approval fired only `PreToolUse(Bash)` + `Stop`, **zero
-  `PermissionRequest`**.
+  cmux/herdr hook never fires for a command/patch approval. 🔵 Confirmed live:
+  while a non-YOLO codex approval is **open** (unanswered) only `PreToolUse` fires
+  — **zero `PermissionRequest`**; `Stop` arrives at *turn end*, after the menu is
+  answered and gone, never while it is visible. (The trigger poll relies on this:
+  a `Stop`/idle hook while `codexScreenAwaiting` is reconciled against the screen
+  so a live menu is never dismissed — `reconcileCodexIdle`.)
 - **Those approval `EventMsg`s are not persisted to the rollout jsonl.**
   `wrapped_protocol_event_type(ExecApprovalRequest) → None`
   (🟢 `codex-rs/rollout-trace/src/protocol_event.rs`). So even-better's transcript

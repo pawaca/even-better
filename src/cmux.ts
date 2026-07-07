@@ -407,14 +407,35 @@ export class CmuxMultiplexer implements Multiplexer {
     const surface = this.surfaceForAgentEvent(payload);
     if (!surface) return;
     const isCodex = this.surfaceMeta.get(surface)?.agent === "codex";
-    // A busy hook must not overwrite an approval menu we detected on screen —
-    // the poll owns the awaiting state until the menu clears.
-    if (isCodex && status === "busy" && this.codexScreenAwaiting.has(surface)) return;
+    if (isCodex && this.codexScreenAwaiting.has(surface)) {
+      // The screen shows a codex approval — it is authoritative. A busy hook must
+      // not clobber the open menu; a Stop/idle (codex fires it at turn end, after
+      // the menu is answered — never while it is open) is reconciled against the
+      // screen so a still-visible dialog is never dismissed by a stray hook.
+      if (status !== "busy") void this.reconcileCodexIdle(surface, status);
+      return;
+    }
     this.routeStatus(surface, status);
     if (isCodex) {
       if (status === "busy") this.startCodexApprovalPoll(surface);
       else this.stopCodexApprovalPoll(surface);
     }
+  }
+
+  /** A codex idle/Stop arrived while we believe an approval is open. Confirm
+   *  against the screen before ending the turn: footer gone ⇒ the menu was
+   *  answered, route it through; footer still present ⇒ the hook is stale
+   *  relative to a live dialog, keep awaiting + the poll. */
+  private async reconcileCodexIdle(surface: string, status: PaneStatus): Promise<void> {
+    let screen = "";
+    try {
+      screen = await this.read(surface, 0);
+    } catch {
+      return; // read failed — keep state; a later poll tick reconciles
+    }
+    if (isCodexApprovalScreen(screen)) return; // menu still up — ignore the hook
+    this.stopCodexApprovalPoll(surface); // clears codexScreenAwaiting + timer
+    this.routeStatus(surface, status);
   }
 
   /** Screen-poll a busy codex surface for an approval prompt and synthesize
