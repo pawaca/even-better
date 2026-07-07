@@ -53,6 +53,45 @@ interface PlanItem {
   step?: string;
 }
 
+export interface StructuredQuestion {
+  question: string;
+  header: string;
+  options: { label: string; description: string }[];
+}
+
+/** Build an AskUserQuestion form from a pending tool's jsonl input — claude
+ *  carries the exact question text and per-option descriptions there, richer and
+ *  more reliable than scraping the rendered menu (which also mis-guesses the
+ *  title). Returns null unless it's a single-question AskUserQuestion with ≥1
+ *  labelled option, so the arrow-nav response still maps 1:1 to the on-screen
+ *  order. */
+export function structuredQuestion(
+  pending: { name: string; input: Record<string, unknown> } | undefined,
+): StructuredQuestion | null {
+  if (!pending || pending.name !== "AskUserQuestion") return null;
+  const questions = pending.input.questions;
+  if (!Array.isArray(questions) || questions.length !== 1) return null;
+  const q = questions[0];
+  if (typeof q !== "object" || q === null) return null;
+  const rec = q as Record<string, unknown>;
+  if (!Array.isArray(rec.options)) return null;
+  const options = rec.options
+    .map((o) => {
+      const or = (typeof o === "object" && o !== null ? o : {}) as Record<string, unknown>;
+      return {
+        label: typeof or.label === "string" ? or.label : "",
+        description: typeof or.description === "string" ? or.description : "",
+      };
+    })
+    .filter((o) => o.label);
+  if (options.length === 0) return null;
+  return {
+    question: typeof rec.question === "string" ? rec.question : "Choose an option",
+    header: typeof rec.header === "string" ? rec.header : "",
+    options,
+  };
+}
+
 /** Map a TodoWrite tool input to the app's task_progress widget fields. */
 export function todoProgress(
   input: Record<string, unknown>,
@@ -533,6 +572,33 @@ export class PaneBridge {
           : (kindHint ?? classified?.kind ?? "permission");
 
     if (kind === "question") {
+      // Prefer the structured form from the transcript (exact question + per-option
+      // descriptions); the response arrow-navigates by option index, which matches
+      // the on-screen order claude renders. Fall back to the screen parse.
+      const structured = structuredQuestion(pendingTool);
+      if (structured) {
+        this.currentMenu = {
+          title: structured.question,
+          options: structured.options.map((o, i) => ({ digit: String(i + 1), label: o.label })),
+          kind: "question",
+        };
+        emit(this.paneId, {
+          type: "user_question",
+          questions: [
+            {
+              question: structured.question,
+              header: structured.header,
+              options: structured.options.map((o) => ({
+                label: o.label,
+                description: o.description,
+                preview: "",
+              })),
+            },
+          ],
+          toolUseId: `${this.paneId}-${Date.now()}`,
+        });
+        return;
+      }
       if (!menu) {
         emit(this.paneId, {
           type: "notification",
