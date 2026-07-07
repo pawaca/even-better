@@ -110,20 +110,42 @@ export interface ParsedMenu {
 /**
  * Parse a numbered selection menu from a rendered TUI screen (claude/codex
  * permission prompts and AskUserQuestion forms both render as "N. label"
- * lists). Returns null when no plausible menu is on screen.
+ * lists). The highlighted option carries a selection marker — `❯` for claude,
+ * `›` for codex — which must be skipped, else that option is missed (and for a
+ * 3-option codex approval that mis-parses into a 2-option "question", verified
+ * live). Because codex reuses `›` as its *input-line* prefix too, options are
+ * accepted only as a contiguous 1,2,3,… run (see below), so a numbered prompt
+ * echo is not mistaken for a menu. Returns null when none is on screen.
  */
 export function parseMenu(text: string): ParsedMenu | null {
   const lines = text.split("\n");
-  const options: MenuOption[] = [];
-  let firstOptionIdx = -1;
+  // Every "N. label" / "N) label" line, minus a leading selection marker.
+  const hits: { idx: number; digit: number; label: string }[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^\s*(?:❯\s*)?(\d)[.)]\s+(.+?)\s*$/);
-    if (m) {
-      if (firstOptionIdx === -1) firstOptionIdx = i;
-      options.push({ digit: m[1], label: m[2] });
+    const m = lines[i].match(/^\s*(?:[❯›]\s*)?(\d)[.)]\s+(.+?)\s*$/);
+    if (m) hits.push({ idx: i, digit: Number(m[1]), label: m[2] });
+  }
+  // A real menu is a CONTIGUOUS run numbered 1,2,3,…. Requiring that rejects a
+  // `› N.` codex *prompt echo* (the same marker prefixes user input) and stray
+  // stale options elsewhere on screen — otherwise those form a fake menu that
+  // keeps `menuGone()` from ever clearing. Keep the LAST valid run (the live
+  // dialog paints at the bottom, above the input line).
+  let best: { idx: number; digit: number; label: string }[] = [];
+  let run: { idx: number; digit: number; label: string }[] = [];
+  for (const h of hits) {
+    const prev = run[run.length - 1];
+    if (prev && h.idx - prev.idx <= 2 && h.digit === prev.digit + 1) {
+      run.push(h);
+    } else {
+      if (run.length >= 2 && run[0].digit === 1) best = run;
+      run = h.digit === 1 ? [h] : [];
     }
   }
-  if (options.length < 2) return null;
+  if (run.length >= 2 && run[0].digit === 1) best = run;
+  if (best.length < 2) return null;
+
+  const options: MenuOption[] = best.map((h) => ({ digit: String(h.digit), label: h.label }));
+  const firstOptionIdx = best[0].idx;
 
   // Title: nearest content line above the first option.
   let title = "";
