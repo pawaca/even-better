@@ -41,16 +41,17 @@ session **id**, never a path — see [§3](#3-no-transcript-path).)
 - `message.usage.input_tokens` / `output_tokens` **only** — cache/reasoning
   fields ignored; usage attached to the first emitted block then nulled.
 
-**Contract gaps (fields present in the jsonl we don't use):**
-- 🟢🐛 **`tool_result.is_error` is dropped.** The canonical error block is
+**Field-consumption notes (recently wired ✅ / still unused):**
+- 🟢✅ **`tool_result.is_error` is now read.** The canonical error block is
   `{ type:"tool_result", content, is_error:true, tool_use_id }` (Claude Code
   `query.ts::createUserMessage`, and `QueryEngine.ts` sets `is_error` true/false).
-  even-better **hardcodes `ok:true`** (`src/transcript.ts:78`), so it cannot tell a
-  failed Claude tool call from a successful one. Fix: `ok: b.is_error !== true`.
-  (The Codex path *does* read status — see §2.)
-- 🟢 **`message.model` unused.** Every assistant record carries it (observed
-  `claude-opus-4-8`). even-better instead scrapes the model from the status bar
-  (`extractModel`, claude-only) for `/api/info` — see the migration in [§4](#4-screen--structured).
+  even-better emits `ok: b.is_error !== true` (`src/transcript.ts`), so a failed
+  Claude tool call is reported as failed. (Was hardcoded `ok:true` before PR #8;
+  the Codex path already read status — see §2.)
+- 🟢✅ **`message.model` now read.** Every assistant record carries it (observed
+  `claude-opus-4-8`); `readClaudeModel` (`src/transcript.ts`) feeds `/api/info`,
+  with the status-bar scrape (`extractModel`) kept only as a pre-session fallback —
+  see [§4](#4-screen--structured).
 - Also available-but-unused: `AskUserQuestion` `tool_use.input.questions[]`
   (`{question, header, multiSelect, options[].{label, description}}`) — richer
   than the on-screen menu (has per-option `description`), captured into
@@ -91,12 +92,12 @@ sources (`isDuplicateMessage`, `src/codex-transcript.ts:327-343`).
 `tool_search_call` deduped by `call_id` (`startedToolSearches`, `:306-310`).
 
 **Contract gaps:**
-- 🟢🔵 **`model` unused.** Codex persists it in the `turn_context` record as a
+- 🟢🔵✅ **`model` now read.** Codex persists it in the `turn_context` record as a
   **required** field: `pub model: String` in
   `codex-rs/protocol/src/protocol.rs::TurnContextItem` → wire
-  `turn_context.payload.model` (🔵 observed `gpt-5.5`). even-better doesn't parse
-  `turn_context`, so codex's `/api/info` model is always `"Unknown"`. Fix: read
-  `turn_context.payload.model`.
+  `turn_context.payload.model` (🔵 observed `gpt-5.5`). `readCodexModel`
+  (`src/codex-transcript.ts`) reads it for `/api/info` — was always `"Unknown"`
+  before PR #8.
 - Codex tool status IS read (`outputOk()` on `function_call_output`) — unlike the
   Claude path (§1). Documenting the asymmetry so it isn't "fixed" into symmetry.
 
@@ -130,7 +131,7 @@ dependencies and whether a structured source can replace them:
 
 | Screen dependency | Recovers | Structured source | Status |
 |---|---|---|---|
-| `extractModel` (`/api/info`) | model name (status-bar regex, claude-only → codex "Unknown") | claude `message.model`; codex `turn_context.payload.model` | **available, unwired** |
+| `extractModel` (`/api/info`) | model name (status-bar regex, claude-only → codex "Unknown") | claude `message.model`; codex `turn_context.payload.model` | ✅ **wired (PR #8)** — scrape is fallback-only |
 | `parseMenu`/`classifyMenu` for **AskUserQuestion** | question + option labels | claude `tool_use.input.questions[]` (already in `pendingTools`, has per-option `description`) | **available, unwired** |
 | `parseMenu`/`classifyMenu` for **plain permission menus** | menu title + Yes/No/allow-always option text | **none** — the TUI choice text is never in the jsonl | **none** (screen is sole source) |
 | `extractResult` (`emitTurnResult`) | final turn text | claude `lastProseBlock` / codex `turnResultText` (used first when a transcript exists) | **none needed** (only the pre-session-id window) |
@@ -139,8 +140,9 @@ dependencies and whether a structured source can replace them:
 `response_item.function_call_output`; prose via `lastProseBlock` before any screen
 fallback; all dedup/volatile/echo-suppression confined to `ScreenTimeline`.
 
-Backlog for wiring the "available, unwired" rows: `docs/`-tracked task
-*"Backlog: structured-source fidelity fixes"*.
+Wired in PR #8: `/api/info` model (`readClaudeModel`/`readCodexModel`) +
+`tool_result.is_error`. Still unwired: AskUserQuestion options from
+`tool_use.input.questions[]` (lower value / higher risk — deferred).
 
 ---
 
