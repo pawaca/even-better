@@ -75,8 +75,7 @@ All under `/api`, bearer-token auth (`?token=` or `Authorization: Bearer`).
 
 ## Transport & resilience
 
-> **Verified as of:** even-terminal **0.8.1** (official npm dist, `routes/events.js`)
-> · even-better `main` + `src/sse.ts` (`retry:` + diagnostics).
+> Describes even-terminal **0.8.1** (official npm dist, `routes/events.js`).
 > even-better is **byte-compatible** with the package's SSE format; every
 > difference below is an **intentional deviation — do not "fix" it back**.
 
@@ -110,10 +109,9 @@ EventSource cannot set headers, so it requires `?token=`. even-better uses
 `timingSafeEqual` + an ephemeral per-process token unless `BRIDGE_TOKEN` is set
 explicitly; the package uses plain `!==` + an ephemeral per-process token.
 
-### Reconnect / resume — measured
+### Reconnect / resume
 
-Diagnosed live via the `src/sse.ts` logging read off the server pane with
-`cmux read-screen`:
+Reconnect behavior, as recorded by the `src/sse.ts` logging:
 
 - The Even app **never sends `Last-Event-ID`** (`lastEventId=-` on every connect),
   **never sets `needReplay=true`** on reconnect, and **never polls
@@ -138,11 +136,10 @@ Diagnosed live via the `src/sse.ts` logging read off the server pane with
   - `socket.on('error')` + `[sse]` diagnostics for observability. (`src/sse.ts`)
   - No gap replay — reconnect content loss is acceptable; the priority is
     "reconnect and keep interacting".
-- **Observed:** clean disconnects (the common case — app backgrounds / graceful
-  close) reconnect on their own fine, including a 16-min inactivity gap. **Zero
-  half-open events captured** across the diagnostic window — so the "stuck" case is
-  rarer here than the clean-drop case, and it remains an app-side gap the server
-  cannot close.
+- **In practice:** clean disconnects (the common case — app backgrounds / graceful
+  close) reconnect on their own fine, including a 16-min inactivity gap. Half-open
+  events are rare — so the "stuck" case is rarer than the clean-drop case, and it
+  remains an app-side gap the server cannot close.
 
 **Intentional deviations from 0.8.1 (do not revert):** last-20 replay cap;
 immediate `status` snapshot pushed on connect (else an app connecting while idle

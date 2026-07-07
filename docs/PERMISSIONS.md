@@ -5,9 +5,8 @@ How even-better turns a blocked agent pane into a `permission_request` /
 interaction where even-better must both *detect*, *present*, and *respond* — so
 it is where screen-scraping is hardest to avoid.
 
-> **Verified as of** (🔵 driven live in scratch cmux panes this session): claude
-> 2.1.x, codex 0.142.5. 🟢 = agent source (`openai/codex` clone), ⚙️ =
-> even-better code (`src/file:line`).
+> Describes claude 2.1.x and codex 0.142.5. Agent-source refs cite `openai/codex`;
+> even-better refs cite `src/file:line`.
 
 ---
 
@@ -26,12 +25,12 @@ Every approval is three separable steps. They have **different** data sources an
 |-------|--------|-------|-------------------------|
 | ① Trigger | ✅ hook | ✅ **screen poll** (`cmux.ts`) — no hook exists (root cause) | claude: mux event; codex: `isCodexApprovalScreen` |
 | ② Present · command | ✅ | ✅ | transcript `function_call`/`tool_use` (`pendingTools`) |
-| ② Present · options | ✅ | ⏳ **PR #11** (not on `main`) | **screen** `parseMenu` (`src/parse.ts`) |
+| ② Present · options | ✅ | ✅ | **screen** `parseMenu` (`src/parse.ts`) |
 | ③ Respond | ✅ | ✅ | fixed keys `Enter`/`Down+Enter`/`Escape` |
 
 ---
 
-## ① Trigger — why codex has none (root cause, 🟢 source-confirmed)
+## ① Trigger — why codex has none (root cause)
 
 even-better flips a pane to `awaiting` only on `agent.hook.PermissionRequest`, or
 `agent.hook.PreToolUse` when `tool_name ∈ {AskUserQuestion, ExitPlanMode}`
@@ -41,8 +40,8 @@ it works. Codex's is not:
 - **Codex's shell/patch approval is a protocol `EventMsg`, not a hook.**
   `ExecApprovalRequest` / `ApplyPatchApprovalRequest` are `EventMsg` variants; the
   `PermissionRequest` **hook** is invoked only from `mcp_tool_call.rs`
-  (`run_permission_request_hooks`) — i.e. **MCP tools only**. 🟢 So the injected
-  cmux/herdr hook never fires for a command/patch approval. 🔵 Confirmed live:
+  (`run_permission_request_hooks`) — i.e. **MCP tools only**. So the injected
+  cmux/herdr hook never fires for a command/patch approval:
   while a non-YOLO codex approval is **open** (unanswered) only `PreToolUse` fires
   — **zero `PermissionRequest`**; `Stop` arrives at *turn end*, after the menu is
   answered and gone, never while it is visible. (The trigger poll relies on this:
@@ -51,14 +50,14 @@ it works. Codex's is not:
   a live menu is never dismissed, and a transient read failure can't lose the idle.)
 - **Those approval `EventMsg`s are not persisted to the rollout jsonl.**
   `wrapped_protocol_event_type(ExecApprovalRequest) → None`
-  (🟢 `codex-rs/rollout-trace/src/protocol_event.rs`). So even-better's transcript
+  (`codex-rs/rollout-trace/src/protocol_event.rs`). So even-better's transcript
   tail cannot see them either.
 - **In plain-TUI codex** (how it is normally run in a terminal pane), codex's own
   TUI renders the menu; cmux's `CodexTeamsApprovalBridge` — which *does* turn
   approvals into structured feed events — only fires for cmux's app-server-driven
   **agent-session** surfaces (`item/commandExecution/requestApproval` over
-  JSON-RPC), not a plain `codex`. 🔵 No approval-bearing `feed.item.*` appeared on
-  the event stream during the test. And even-better subscribes to `agent.hook.*`,
+  JSON-RPC), not a plain `codex`. No approval-bearing `feed.item.*` appears on
+  the event stream. And even-better subscribes to `agent.hook.*`,
   not `feed.item.*`, anyway.
 
 **Net:** for plain-TUI codex the approval exists in exactly one channel
@@ -69,7 +68,7 @@ subscribe to.** A structured codex trigger is therefore **not available** in thi
 setup — a coarse screen detector is the only option (like herdr's screen-based
 `AgentState`, which cmux lacks).
 
-**Implemented (🔵 verified end-to-end).** `CmuxMultiplexer` screen-polls a **busy
+**Implementation.** `CmuxMultiplexer` screen-polls a **busy
 codex** surface every 700 ms (`CODEX_APPROVAL_POLL_MS`) and, when
 `isCodexApprovalScreen()` matches (`parse.ts` — requires the "enter to confirm …
 esc to cancel" footer, a live `parseMenu` menu, **and** a `❯`/`›`-marked selected
@@ -78,25 +77,19 @@ it), routes `awaiting`
 with kind `permission`; when the prompt clears it routes back to `busy` (or `idle`
 if a turn-end `Stop` was withheld while the menu was up). The bridge is untouched — its normal `onStatus(awaiting) → emitBlockedMenu
 → parseMenu → permission_request` path builds the request, and the fixed-key
-response answers it. Verified live: a `touch`/`apply_patch` approval surfaced as a
-`permission_request` and an API `allow` ran the command and cleared the menu.
+response answers it: a `touch`/`apply_patch` approval surfaces as a
+`permission_request`, and an API `allow` runs the command and clears the menu.
 Transient `read-screen` failures are tolerated (the poll keeps state and retries).
 
 ---
 
-## ② Present + ③ Respond — verified stable (🔵 live)
-
-Both layers were driven end-to-end against real TUIs this session.
-
-> **Codex ② depends on PR #11** (the `[❯›]` marker + contiguity fix). On `main`
-> today `parseMenu` skips only `❯`, so a codex approval still mis-parses — the
-> codex rows below hold **once #11 merges**, not before.
+## ② Present + ③ Respond
 
 **② `parseMenu` / `classifyMenu` — 5 real menus, all correct** (with the `[❯›]`
-marker fix from #11; the highlighted option is marked `❯` by claude and `›` by
+marker handling; the highlighted option is marked `❯` by claude and `›` by
 codex — the regex must skip both, else it is dropped and a 3-option approval
-mis-parses into a 2-option "question". #11 also requires a contiguous 1,2,3 run
-so a `›` prompt echo is not read as a menu):
+mis-parses into a 2-option "question". `parseMenu` also requires a contiguous
+1,2,3 run so a `›` prompt echo is not read as a menu):
 
 | menu | opts | classify |
 |------|------|----------|
@@ -110,7 +103,7 @@ Regression fixtures in `scripts/test-menu.ts`.
 
 **③ Respond — fixed keys, all three decisions, both agents:**
 
-| decision | keys | verified |
+| decision | keys | effect |
 |----------|------|----------|
 | allow | `Enter` (confirms highlighted opt 1) | claude → file created; codex → file created |
 | deny | `Escape` | codex → patch **not** applied |
@@ -128,8 +121,8 @@ shortcuts (`y`/`p`/`esc`), so the fallback is codex-suboptimal — but the prima
 
 1. **Timing.** ③ sends keys after ① fires + a 400 ms paint wait (`emitBlockedMenu`)
    with `pressAndVerify` retries. A slow-painting menu (codex can escalate-reject-
-   retry, taking 20 s+) can still be read/keyed before it is drawn. 🔵 Observed:
-   keys sent before paint went into the void.
+   retry, taking 20 s+) can still be read/keyed before it is drawn: keys sent
+   before paint go into the void.
 2. **English-keyword classification.** `classifyMenu` matches `yes`/`no`/`don't
    ask` — every tested menu is English; a reworded or localized menu would
    misclassify. Both agents render English today.
@@ -137,15 +130,16 @@ shortcuts (`y`/`p`/`esc`), so the fallback is codex-suboptimal — but the prima
    "Security guide" on the claude trust screen — affects the *question* title,
    not permission classification.
 4. **`AskUserQuestion` forms** (variable options, not the fixed allow/deny triad)
-   still depend on reading option labels — for claude those labels are also in the
-   transcript (`tool_use.input.questions[]`, the deferred structured-source item).
+   depend on reading option labels — for claude those labels are read from the
+   transcript (`tool_use.input.questions[]`) via `structuredQuestion`, with the
+   screen parse as the fallback for multi-question or non-claude forms.
 
 ---
 
 ## Design direction
 
 - **claude:** hook trigger (stable) + parse + fixed keys — solid as-is.
-- **codex:** ✅ trigger is a coarse anchor-based screen poll (`isCodexApprovalScreen`,
+- **codex:** trigger is a coarse anchor-based screen poll (`isCodexApprovalScreen`,
   §① above) — no structured source exists; ② command from the transcript + ③ fixed
   keys. The anchor is the "Would you like to …" question / confirm-cancel footer,
   **not** the option text, so it survives menu-layout changes.
