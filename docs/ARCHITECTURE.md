@@ -108,8 +108,9 @@ Three deliberate choices here:
    interface Timeline { poll(): Promise<AgentEvent[]>; dispose(): void; }
    //   TranscriptTimeline       — Claude jsonl: structured, lossless, no heuristics
    //   CodexTranscriptTimeline  — Codex rollout jsonl: structured, lossless, no screen heuristics
-   //   ScreenTimeline           — any agent via mux.read(): the diff + volatile-filter
-   //                              + dedup pipeline, used only when no structured log exists
+   //   ScreenTimeline           — content source ONLY for agents with no transcript
+   //                              parser; claude/codex are transcript-only. The diff +
+   //                              volatile-filter + dedup pipeline (screen artifacts).
    ```
 
    This demotes screen-scraping from "the mechanism" to "the fallback Timeline,"

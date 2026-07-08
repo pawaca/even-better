@@ -67,10 +67,15 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 - **Claude menus don't respond to number keys.** Enter confirms the highlighted
   option (default = option 1), arrows move it, Escape cancels. Digits are only
   fallbacks. This is the measured grammar in `respondPermission`.
-- **Transcript-first; screen is fallback only.** Prefer the jsonl
-  (`TranscriptTimeline`); drop to `ScreenTimeline` only when no session id exists
-  yet. Dedup/filtering are **screen artifacts** — they must not run over a
-  structured source, so they stay inside `ScreenTimeline`, never in the core.
+- **Transcript-only content for claude/codex.** They mirror the jsonl
+  (`TranscriptTimeline`) and nothing else: before the transcript resolves the
+  bridge shows no content (the poll keeps retrying the upgrade), rather than
+  degrading to the `ScreenTimeline` scrape — that only ever mirrored boot/TUI
+  noise in the pre-transcript window. `ScreenTimeline` as a *content* source is
+  now reserved for agents with no transcript parser. The screen is still read for
+  the **interaction layer** (permission menus, codex approval detection) — that is
+  a separate direct read, not this content path. Dedup/filtering remain **screen
+  artifacts** confined to `ScreenTimeline`, never in the core.
 - **Text is append-only on the app side.** Once a `text_delta` is sent it cannot
   be edited. This is *why* we buffer whole prose blocks from the jsonl and
   `renderForGlasses` them before sending — we can fix a table only because we hold
