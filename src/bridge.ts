@@ -146,8 +146,9 @@ export function permissionPresentation(
   explain: Explanation,
 ): "emit" | "ignore" | "notify" {
   if (menu && classified?.kind === "permission") return "emit";
+  if (explain.visibleBlocker === false) return "ignore";
   if (pendingTool) return "emit";
-  return explain.visibleBlocker === false ? "ignore" : "notify";
+  return "notify";
 }
 
 export type AppState = "idle" | "busy" | "awaiting";
