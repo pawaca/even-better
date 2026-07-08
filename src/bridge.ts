@@ -41,6 +41,13 @@ const POLL_INTERVAL_MS = 300;
 // signal within this window cancels the pending idle (the agent resumed); if
 // idle persists, the turn is really over.
 const IDLE_GRACE_MS = 3500;
+// Text-reveal cadence on the glasses: ms between text_delta frames. Larger =
+// slower, more readable. Default 140 (~20 chars/s for a short answer); override
+// with STREAM_TICK_MS if that still scrolls off too fast.
+const STREAM_TICK_MS = (() => {
+  const raw = Number(process.env.STREAM_TICK_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 140;
+})();
 
 interface TodoItem {
   status?: string;
@@ -174,7 +181,7 @@ export class PaneBridge {
 
   // Paced output: text types out gradually, tool_start events interleave in
   // order. Widgets bypass it; result/idle wait for it to drain.
-  private readonly out = new OutputStream((msg) => emit(this.paneId, msg));
+  private readonly out = new OutputStream((msg) => emit(this.paneId, msg), STREAM_TICK_MS);
 
   constructor(info: PaneInfo) {
     this.paneId = info.paneId;

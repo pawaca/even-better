@@ -11,10 +11,11 @@ export class OutputStream {
   private queue: Item[] = [];
   private pacer: ReturnType<typeof setTimeout> | null = null;
 
-  /** @param emit sink for one wire message. @param tickMs gap between frames. */
+  /** @param emit sink for one wire message. @param tickMs gap between frames
+   *  (larger = slower reveal; the bridge sets this from `STREAM_TICK_MS`). */
   constructor(
     private readonly emit: (msg: object) => void,
-    private readonly tickMs = 100,
+    private readonly tickMs = 140,
   ) {}
 
   /** Queue text to type out gradually. Split by code point so a surrogate pair
@@ -82,8 +83,9 @@ export class OutputStream {
       this.queue.shift();
     } else {
       // Chars per tick scale with the backlog so a long answer stays bounded
-      // (~10s) while a short one types gently; never fewer than 4.
-      const n = Math.min(30, Math.max(4, Math.ceil(this.pendingChars() / 120)));
+      // while a short one types gently enough to read on the glasses; never
+      // fewer than 3. At the default tickMs a short answer reveals ~20 chars/s.
+      const n = Math.min(18, Math.max(3, Math.ceil(this.pendingChars() / 160)));
       this.emit({ type: "text_delta", text: head.chars.slice(head.pos, head.pos + n).join("") });
       head.pos += n;
       if (head.pos >= head.chars.length) this.queue.shift();
