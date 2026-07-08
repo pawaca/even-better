@@ -27,7 +27,7 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "check": "tsc --noEmit",
-    "test": "tsx scripts/test.ts"
+    "test": "tsx --test scripts/test-*.ts"
   },
   "engines": {
     "node": ">=18"
