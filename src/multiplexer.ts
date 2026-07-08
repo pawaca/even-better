@@ -40,11 +40,15 @@ export interface Multiplexer {
   readonly name: string;
   /** Every agent pane currently known to the backend. */
   listPanes(): Promise<PaneInfo[]>;
-  /** Push normalized status transitions for one pane until `close()`. onClose
-   *  fires when the underlying stream drops (caller decides whether to retry). */
+  /** Push normalized status transitions for one pane until `close()`. `session`
+   *  carries the agent's session id when the backend learns it from the same
+   *  event (herdr's status event, cmux's SessionStart-refreshed maps), so the
+   *  bridge upgrades to the transcript without polling; undefined until known.
+   *  onClose fires when the underlying stream drops (caller decides whether to
+   *  retry). */
   watchStatus(
     paneId: string,
-    onStatus: (s: PaneStatus) => void,
+    onStatus: (s: PaneStatus, session?: string) => void,
     onClose: (err?: Error) => void,
   ): StatusSub;
   /** The pane's visible screen (viewport), up to `lines` lines. */

@@ -321,7 +321,7 @@ export class HerdrMultiplexer implements Multiplexer {
 
   watchStatus(
     paneId: string,
-    onStatus: (s: PaneStatus) => void,
+    onStatus: (s: PaneStatus, session?: string) => void,
     onClose: (err?: Error) => void,
   ): StatusSub {
     return subscribe(
@@ -336,7 +336,8 @@ export class HerdrMultiplexer implements Multiplexer {
         }
         if (event === "pane.agent_status_changed") {
           const raw = (data.state as string | undefined) ?? (data.agent_status as string | undefined);
-          onStatus(mapHerdrStatus(raw));
+          const session = (data.agent_session as { value?: string } | undefined)?.value;
+          onStatus(mapHerdrStatus(raw), session);
         }
       },
       onClose,
