@@ -675,7 +675,11 @@ export class PaneBridge {
       this.currentMenu = null;
       this.state = "idle";
       this.stopStats();
-      await this.emitTurnResult();
+      if (this.turnStartMs) {
+        await this.emitTurnResult();
+      } else {
+        emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
+      }
       return;
     }
 
