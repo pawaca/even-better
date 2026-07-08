@@ -180,12 +180,8 @@ export class PaneBridge {
   agent: string;
   cwd: string;
   agentSessionId: string | undefined;
-  // True when the pane already had a session at attach (an agent that was running
-  // before us) — its transcript is tailed from EOF so we don't replay history. A
-  // pane discovered session-less tails from the start but only emits entries newer
-  // than `attachedAt`, so a first turn born while we watch isn't lost, yet a
-  // resumed/late-listed session's old history is not replayed to the glasses.
-  private readonly attachedWithSession: boolean;
+  // When the transcript first appears only after attach, its upgrade reads from the
+  // start but emits entries newer than this (see upgradeToTranscript's fromStart).
   private readonly attachedAt = Date.now();
   state: AppState = "idle";
 
@@ -225,7 +221,6 @@ export class PaneBridge {
     this.agent = info.agent;
     this.cwd = info.cwd;
     this.agentSessionId = info.sessionId;
-    this.attachedWithSession = !!info.sessionId;
     this.state = toAppState(info.status);
   }
 
@@ -259,7 +254,10 @@ export class PaneBridge {
    *  before the upgrade is accepted as a small gap. Only an agent with no
    *  transcript parser still falls back to the screen. */
   private selectTimeline(): void {
-    if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId)) return;
+    // Initial upgrade: the transcript already exists (agent running before us), so
+    // tail from EOF (fromStart=false). If it isn't ready yet we fall to the poll,
+    // which upgrades with fromStart=true once it appears.
+    if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId, false)) return;
     this.onTranscript = false;
     if (this.agent === "claude" || this.agent === "codex") {
       this.timeline = null; // wait for the transcript; the poll keeps retrying
@@ -279,13 +277,13 @@ export class PaneBridge {
     this.timeline = this.screen;
   }
 
-  private upgradeToTranscript(id: string): boolean {
-    // A session-less-at-attach pane reads from the start but only surfaces entries
-    // newer than attach — so a first turn born while we watch isn't lost, while a
-    // resumed or late-listed session's pre-attach history is skipped, not replayed.
-    // An already-running agent is tailed from EOF (no read of its whole history).
-    const since = this.attachedWithSession ? undefined : this.attachedAt;
-    const fromStart = since !== undefined;
+  //  fromStart=false: the transcript existed at attach (agent running before us) —
+  //    tail from EOF so we don't read/replay its history.
+  //  fromStart=true: the transcript appeared LATER (fresh/lagging/resumed session) —
+  //    read from the start but surface only entries newer than attach, so a first
+  //    turn born while we watch isn't lost yet old history isn't replayed.
+  private upgradeToTranscript(id: string, fromStart: boolean): boolean {
+    const since = fromStart ? this.attachedAt : undefined;
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
@@ -341,7 +339,10 @@ export class PaneBridge {
    *  the screen fallback; a no-op once tailing. */
   noteSessionId(id: string): void {
     if (this.onTranscript || this.disposed) return;
-    this.upgradeToTranscript(id);
+    // A later upgrade — the transcript wasn't ready at attach, so this is a fresh /
+    // lagging / resumed session: read from the start, emitting only entries newer
+    // than attach (fromStart=true).
+    this.upgradeToTranscript(id, true);
   }
 
   private startPolling(): void {
