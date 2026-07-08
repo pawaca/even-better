@@ -305,17 +305,31 @@ export class PaneBridge {
   private startPolling(): void {
     if (this.pollTimer || this.disposed) return;
     this.pollTimer = setInterval(() => {
-      // A session id known before its transcript existed: retry the file lookup
-      // (throttled) so a fresh turn upgrades off the screen fallback as soon as
-      // the jsonl lands — no dedicated timer. On success this tick polls it.
+      // Resolve the transcript off the screen fallback, throttled, on this
+      // existing timer (no dedicated probe). Two cases, both preempted by a
+      // status event that already carried the session:
+      //   - session known but its jsonl isn't written yet -> retry the lookup;
+      //   - session not delivered by the status event (older herdr that doesn't
+      //     push agent_session) -> fetch it via sessionId() so we don't wait on
+      //     an app /sessions poll.
+      // On success this same tick then polls the transcript.
       if (
         !this.polling &&
         !this.onTranscript &&
-        this.pendingSessionId &&
+        (this.agent === "claude" || this.agent === "codex") &&
         Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
       ) {
         this.lastUpgradeTryMs = Date.now();
-        if (this.upgradeToTranscript(this.pendingSessionId)) this.pendingSessionId = null;
+        if (this.pendingSessionId) {
+          if (this.upgradeToTranscript(this.pendingSessionId)) this.pendingSessionId = null;
+        } else {
+          void getMux()
+            .sessionId(this.paneId)
+            .then((id) => {
+              if (id && !this.onTranscript) this.noteSessionId(id);
+            })
+            .catch(() => {});
+        }
       }
       const tl = this.timeline;
       if (this.polling || !tl) return;
