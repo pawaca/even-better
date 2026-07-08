@@ -5,16 +5,13 @@ each exposes over its socket/CLI, and how those map to the neutral `Multiplexer`
 interface (`src/multiplexer.ts`). Read `docs/ARCHITECTURE.md` for *why* the seam
 exists; this doc is *what the backends actually do*.
 
-> **Verified as of:** herdr **0.7.1** (`Cargo.toml`; shallow-clone HEAD → wire
-> protocol **16** in `src/protocol/wire.rs`) · cmux **0.64.17** (build 97,
-> `9ed29d81a`) · even-better `main` (post-#6). Every non-obvious claim
-> cites its source: even-better code as `src/file:line`; external code as
-> `<repo> path::symbol` against a pinned clone; or a **repro** command. When
-> upstream docs, `--help`, and observed behavior disagree, **observed/source
-> wins** — see [Discrepancies](#discrepancies). Re-derivation recipe at the end.
-
-Provenance tags: 🟢 **source** (read the backend's own code) · 🔵 **live**
-(ran it here) · ⚙️ **code** (even-better consumes it).
+> Describes herdr **0.7.1** (`Cargo.toml`; wire protocol **16** in
+> `src/protocol/wire.rs`) and cmux **0.64.17** (build 97, `9ed29d81a`). Every
+> non-obvious claim cites its source: even-better code as `src/file:line`;
+> external code as `<repo> path::symbol` against a pinned clone; or a **repro**
+> command. When upstream docs, `--help`, and observed behavior disagree,
+> **observed/source wins** — see [Discrepancies](#discrepancies). Re-derivation
+> recipe at the end.
 
 ---
 
@@ -22,13 +19,12 @@ Provenance tags: 🟢 **source** (read the backend's own code) · 🔵 **live**
 
 The two backends **discover agents differently**, so a missing hook has different
 consequences — this is the first thing to check when "my agent doesn't show up."
-(🔵 verified on this machine · 🟢 source.)
 
 | Mux + agent | Setup | Effect of the hook / gotcha |
 |---|---|---|
 | **cmux + claude** | none — automatic | cmux ships `cmux-claude-wrapper`; a per-surface PATH shim (`$TMPDIR/cmux-cli-shims/<surface>/claude`) intercepts `claude` and injects `--settings {hooks:…}` at launch. **claude-only** — there is no codex wrapper/shim. |
 | **cmux + codex** | `cmux hooks codex install` (once) | Writes cmux's hooks into `$CODEX_HOME/hooks.json`, or `~/.codex/hooks.json` when unset (appends alongside herdr's, doesn't overwrite). **Then codex registers only on its _first prompt_**, not at launch (fires `SessionStart`/`UserPromptSubmit` lazily). |
-| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (🟢 `src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
+| **herdr + claude / codex** | install `herdr-agent-state.sh` (`~/.claude/settings.json`, `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json`) | The hook only reports the **session id**; herdr detects the agent + status from the screen regardless (`src/detect/mod.rs` — "detection via terminal tail pattern matching"). |
 
 **Discovery is hook-only for cmux but screen-based for herdr, so a missing hook
 means different things:**
@@ -77,55 +73,55 @@ Shared helper `typeAndSubmit(mux, id, text)` (`src/multiplexer.ts`) composes
 
 **Transport.** JSON-RPC over a Unix socket, one request line → one response line.
 Path: `~/.config/herdr/herdr.sock` (`src/herdr.ts`).
-🟢 The full CLI is documented by `herdr <sub> --help`; the raw protocol lives at
+The full CLI is documented by `herdr <sub> --help`; the raw protocol lives at
 `herdr.dev/docs/socket-api/`.
 
-**SAFE_METHODS allowlist** (`src/herdr.ts:19-30`, ⚙️): `agent.list`, `pane.get`,
+**SAFE_METHODS allowlist** (`src/herdr.ts:19-30`): `agent.list`, `pane.get`,
 `pane.read`, `pane.send_input`, `events.subscribe`, `agent.explain`, plus
 `workspace.create`/`workspace.close`/`pane.report_agent` **reserved for the
 self-test only — zero call sites**. `server.*` is excluded end-to-end.
 > **Invariant — never call `server.*`:** `server.reload_config`/`server.stop`
 > kill the running herdr. Keep new methods inside the allowlist.
 
-**agent_status vocabulary — exactly 4 states.** 🟢 `enum AgentState { Idle,
+**agent_status vocabulary — exactly 4 states.** `enum AgentState { Idle,
 Working, Blocked, Unknown }` (herdr `src/detect/mod.rs::AgentState`). "done" is a
 *notification/sound* concept, **not** a detection state. even-better maps
 `working→busy`, `blocked→awaiting`, everything else (`idle`/`unknown`)→`idle`
 (`mapHerdrStatus`, `src/herdr.ts`).
 
-**`pane.read` sources — snake_case wire values.** 🟢 herdr
+**`pane.read` sources — snake_case wire values.** herdr
 `src/api/schema/common.rs::ReadSource` is `#[serde(rename_all="snake_case")]` →
 `visible`, `recent`, `recent_unwrapped`, `detection`. `detection` is sugar over
 `recent` fixed to viewport rows (`src/pane/terminal.rs::detection_text`) — even-better
 doesn't use it. even-better only sends `visible` (`getMux().read`).
 
-**Key names are CASE-INSENSITIVE.** 🟢 `pane.send_input` keys go
+**Key names are CASE-INSENSITIVE.** `pane.send_input` keys go
 `encode_api_keys → parse_api_key → normalize_api_key_alias(trim) → parse_key_combo`,
 and `parse_key_combo` does `key_str.to_lowercase()` before matching (herdr
 `src/config/keybinds.rs::parse_key_combo`, `src/app/api_helpers.rs`). Aliases:
 `enter`|`return`, `esc`|`escape`. So even-better's capitalized `"Enter"`,
 `"Escape"`, `"Down"` are all valid.
 
-**events.subscribe surface.** 🟢 herdr's `Subscription` enum supports **24**
+**events.subscribe surface.** herdr's `Subscription` enum supports **24**
 event types (6 workspace + 3 worktree + 5 tab + 9 pane + 1 layout — herdr
 `src/api/schema/events.rs::Subscription`);
 even-better subscribes to just `pane.agent_status_changed` and `pane.closed`.
 (`PaneOutputChanged` exists in `EventKind` but is *not* directly subscribable —
 only matchable in `events.wait`.)
 
-**No transcript path over the socket.** 🟢 `AgentSessionInfo{source, agent,
+**No transcript path over the socket.** `AgentSessionInfo{source, agent,
 kind:Id|Path, value}` — but `session_ref_from_report()` only builds `Path` for
 agents named `pi`/`omp`; **claude/codex always get `Id` only** (herdr
 `src/agent_resume.rs`, `src/api/schema/agents.rs`). So `agent_session.value` is
 always the session UUID; the jsonl path is not obtainable from herdr.
 
-**id format.** 🔵 Live ids are `w1`, `w1:t1`, `w1:p1`, `w654cdbe81c27d1:pW` — **not**
+**id format.** Actual ids are `w1`, `w1:t1`, `w1:p1`, `w654cdbe81c27d1:pW` — **not**
 the `1`/`1:1`/`1-1` the skill shows. even-better treats them as opaque strings, so
 it's unaffected, but **do not quote `1-1` as a literal**.
 > **Invariant — ids compact:** herdr ids are reassigned when panes/tabs/workspaces
 > close; never treat them as durable. even-better re-derives per bridge session.
 
-**self-test method shapes** (allowlisted, uncalled) 🟢: `workspace.create` →
+**self-test method shapes** (allowlisted, uncalled): `workspace.create` →
 `WorkspaceCreated{workspace, tab, root_pane}`; `workspace.close` → `Ok{}`;
 `pane.report_agent(_session)` → `Ok{}` (state observed via events).
 
@@ -151,24 +147,24 @@ socket path, because the default path differs by build.
 | `Notification` | *dropped* | ambiguous (also fires for idle reminders), carries no message |
 | `surface.closed` | `closed` | |
 
-**Every `agent.hook.*` is delivered TWICE.** 🟢 `TerminalController.v2FeedPush`
+**Every `agent.hook.*` is delivered TWICE.** `TerminalController.v2FeedPush`
 publishes each event unconditionally with `phase="received"` (on receipt) then
 `phase="completed"` (after `FeedCoordinator.ingestBlocking` returns) — for *every*
 hook, including fire-and-forget telemetry (cmux `Sources/TerminalController.swift`,
-`Sources/Feed/FeedCoordinator.swift`). 🔵 Confirmed live: `received`/`completed`
+`Sources/Feed/FeedCoordinator.swift`). `received`/`completed`
 counts match 1:1 per hook type.
 > **Invariant — dedupe by phase:** even-better acts on `phase==="received"` only
 > (`src/cmux.ts` `onEvent`). Processing both double-drives every transition — a
 > duplicate `busy` after `Stop` cancels the idle debounce with no re-arm
 > (stranding the turn, glasses keep timing) and re-emits interactive menus.
 
-**category is always `"agent"`.** 🟢 `publishWorkstreamEvent` is the single
+**category is always `"agent"`.** `publishWorkstreamEvent` is the single
 `agent.hook.*` publish site and hardcodes `category:"agent"` with no branch on
 hook name (cmux `Sources/CmuxEventPublishing.swift`). So even-better's
 `--category agent --category surface` filter is complete.
 
 **PermissionRequest / AskUserQuestion / ExitPlanMode — and skip-permissions.**
-🟢 Claude Code has **no native `AskUserQuestion` or `ExitPlanMode` hook**; cmux
+Claude Code has **no native `AskUserQuestion` or `ExitPlanMode` hook**; cmux
 re-tags the generic `PermissionRequest` hook by `tool_name` into wire events
 `("AskUserQuestion"|"ExitPlanMode", actionable:true)` (cmux
 `CLI/FeedEventClassifier.swift::dedicatedApprovalEvent`). **Crucially, under
@@ -177,9 +173,9 @@ fires NEITHER `PermissionRequest` NOR `Notification`**, so `PreToolUse` carrying
 `tool_name` is the *only* needs-input signal (cmux's own regression fix #6606,
 `CLI/cmux.swift`). This is why even-better routes `PreToolUse{AskUserQuestion,
 ExitPlanMode}` → awaiting: it is **required**, not redundant, whenever the agent
-runs with skip-permissions (the default under cmux on this machine).
+runs with skip-permissions (the default under cmux).
 
-**Codex approval is architecturally different.** 🟢 The wire hook vocabulary is
+**Codex approval is architecturally different.** The wire hook vocabulary is
 unified (codex snake_case → same PascalCase names, same received/completed
 wrapper), **but** codex's own `permission_request` hook is classified
 `.toolStart` (non-actionable, so codex's auto-reviewer isn't short-circuited);
@@ -187,15 +183,15 @@ codex's real blocking approval comes from a **separate**
 `CLI/CodexTeamsApprovalBridge.swift` that synthesizes its own
 `hook_event_name:"PermissionRequest"` from app-server JSON-RPC — bypassing the
 classifier. (even-better's cmux path is claude-shaped; codex-in-cmux interactive
-approval is **unverified end-to-end** — see [Open](#open).)
+approval is **not exercised by this path** — see [Open](#open).)
 
-**agent.hook payload fields** 🟢 (`Sources/CmuxEventPublishing.swift::workstreamPayload`):
+**agent.hook payload fields** (`Sources/CmuxEventPublishing.swift::workstreamPayload`):
 always `session_id, hook_event_name, _source, workspace_id, cwd, tool_name`;
 `tool_input`/`context`/`extra_fields` redacted to null + a `_length` counterpart.
 Note `session_id` is prefixed (`claude-<uuid>`); even-better strips it to the bare
 UUID (`bareSession`, `src/cmux.ts`).
 
-**hook-sessions file — three indices.** 🟢 `~/.cmuxterm/<agent>-hook-sessions.json`
+**hook-sessions file — three indices.** `~/.cmuxterm/<agent>-hook-sessions.json`
 holds `sessions{}`, `activeSessionsByWorkspace`, `activeSessionsBySurface`.
 `upsert` always writes `sessions[id]`; the active-index maps are written only when
 `markActive:true`, and at SessionStart `markActive = !isForkSessionLaunch &&
@@ -208,14 +204,14 @@ holds `sessions{}`, `activeSessionsByWorkspace`, `activeSessionsBySurface`.
 > activeSessionsBySurface + pid-alive `sessions{}` + activeSessionsByWorkspace
 > (`src/cmux.ts`); reading only the surface index misses those panes.
 
-**resume binding — nested only.** 🟢 `surface resume get` emits `kind`/`checkpoint_id`
+**resume binding — nested only.** `surface resume get` emits `kind`/`checkpoint_id`
 **only nested under `resume_binding`**, never top-level (cmux
 `Packages/macOS/CmuxControlSocket/.../ControlCommandCoordinator+Surface3.swift::surfaceResumeBindingPayload`).
 even-better also accepts a top-level shape defensively (`sessionId`, `src/cmux.ts`),
 but that fallback guards a **non-existent case** and can be simplified (the
 cited cmux#6285 is an unrelated fish-shell bug, not a resume-shape skew).
 
-**transcriptPath exists but is unreliable.** 🟢 `sessions[id].transcriptPath` is
+**transcriptPath exists but is unreliable.** `sessions[id].transcriptPath` is
 persisted at SessionStart from the hook's `transcript_path`, but fork-session
 launches skip the upsert until first `UserPromptSubmit`; cmux's own
 `AgentChatTranscriptResolver` existence-checks it and falls back to a derived/
@@ -228,12 +224,12 @@ scanned path. even-better's filesystem scan mirrors exactly this fallback — th
 
 | Area | Docs / comment say | Source / live | Authoritative |
 |---|---|---|---|
-| herdr id format | `1`, `1:1`, `1-1` (SKILL.md) | `w1`, `w1:p1`, … | 🔵 live (0.7.1) |
-| herdr `pane.read` source | `recent-unwrapped` (hyphen; docs+`--help`) | wire is `recent_unwrapped` (underscore); hyphen errors over the raw socket (CLI translates) | 🟢 source (`ReadSource` serde) |
-| herdr `--json` on `agent list`/`get` | assumed a `--json` flag | `agent list`/`pane list` emit JSON **unconditionally**; `--json` on list/get **errors**. Only `agent explain` has a real `--json` | 🔵 live |
-| cmux `surface resume` | absent from `cli-contract.md` | real + load-bearing (`surface resume get\|show\|set\|clear`) | 🔵 live `--help` |
-| cmux AskUserQuestion "only via PreToolUse on some builds" | even-better comment | on 0.64.17 both the dedicated hook AND `PreToolUse{AskUserQuestion}` fire; PreToolUse is the *sole* signal only under skip-permissions | 🟢 source (#6606) |
-| cmux `resume_binding` top-level skew (#6285) | code comment | nested-only; #6285 misattributed | 🟢 source (refuted) |
+| herdr id format | `1`, `1:1`, `1-1` (SKILL.md) | `w1`, `w1:p1`, … | live (0.7.1) |
+| herdr `pane.read` source | `recent-unwrapped` (hyphen; docs+`--help`) | wire is `recent_unwrapped` (underscore); hyphen errors over the raw socket (CLI translates) | source (`ReadSource` serde) |
+| herdr `--json` on `agent list`/`get` | assumed a `--json` flag | `agent list`/`pane list` emit JSON **unconditionally**; `--json` on list/get **errors**. Only `agent explain` has a real `--json` | live |
+| cmux `surface resume` | absent from `cli-contract.md` | real + load-bearing (`surface resume get\|show\|set\|clear`) | live `--help` |
+| cmux AskUserQuestion "only via PreToolUse on some builds" | even-better comment | on 0.64.17 both the dedicated hook AND `PreToolUse{AskUserQuestion}` fire; PreToolUse is the *sole* signal only under skip-permissions | source (#6606) |
+| cmux `resume_binding` top-level skew (#6285) | code comment | nested-only; #6285 misattributed | source (refuted) |
 
 ---
 
@@ -249,10 +245,15 @@ scanned path. even-better's filesystem scan mirrors exactly this fallback — th
 
 ---
 
-## <a id="open"></a>6. Open (needs a live run, not source)
+## <a id="open"></a>6. Open questions (untested paths)
 
-- **cmux `PermissionRequest` / `ExitPlanMode` end-to-end** — never observed live (this machine runs claude with `--dangerously-skip-permissions`, which suppresses them). Verify with a claude session **without** skip-permissions that hits a real approval / plan-mode.
-- **codex-in-cmux interactive approval** — routes through the separate `CodexTeamsApprovalBridge`, not the claude-shaped hook path even-better implements. Unverified against a live codex-in-cmux session.
+- **cmux `PermissionRequest` / `ExitPlanMode`** — not exercised under
+  `--dangerously-skip-permissions`, which suppresses them; reaching this path
+  needs a claude session **without** skip-permissions that hits a real approval /
+  plan-mode.
+- **codex-in-cmux interactive approval** — routes through the separate
+  `CodexTeamsApprovalBridge`, not the claude-shaped hook path even-better
+  implements; untested against a live codex-in-cmux session.
 
 ---
 

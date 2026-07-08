@@ -175,7 +175,7 @@ For a quick manual check without adding a full E2E harness:
 
 ```bash
 PORT=3457 BRIDGE_TOKEN=test-token LOG_FILE=/tmp/even-better-events.log pnpm start
-npx tsx scripts/app-sim.ts 3457 test-token <pane-id> /tmp/even-better-sim.jsonl
+npx tsx tools/app-sim.ts 3457 test-token <pane-id> /tmp/even-better-sim.jsonl
 ```
 
 Then send a prompt from the app or:

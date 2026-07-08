@@ -53,8 +53,8 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 - `npx tsx scripts/test-transcript.ts` (and `test-render`, `test-diff-unit`,
   `test-widgets`, `test-menu`) — pure-function unit tests. Run the relevant one
   after touching its module.
-- End-to-end: `scripts/app-sim.ts` records what a connected app receives;
-  `scripts/analyze-sim.py` scores a recording. See "Verification" below.
+- End-to-end: `tools/app-sim.ts` records what a connected app receives;
+  `tools/analyze-sim.py` scores a recording. See "Verification" below.
 
 ## Critical invariants (each cost a debugging round — do not relearn them)
 
@@ -125,7 +125,7 @@ app receives. Drive it end-to-end:
 1. Start a test server on an unused port: `PORT=3457 BRIDGE_TOKEN=... LOG_FILE=/tmp/eb.log LOG=trace pnpm start`.
 2. Create a scratch herdr workspace (`workspace.create` over the socket), run
    `claude` in its pane, let the session-probe upgrade it to the transcript.
-3. Record with `scripts/app-sim.ts <port> <token> <paneId> <out.jsonl>`, drive a
+3. Record with `tools/app-sim.ts <port> <token> <paneId> <out.jsonl>`, drive a
    turn via `POST /api/prompt`, then inspect the recording (or `LOG_FILE`) to
    confirm the exact events the app got.
 4. Clean up the scratch workspace (`workspace.close`) afterward.
