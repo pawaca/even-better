@@ -35,6 +35,10 @@ const OUTPUT_WINDOW_LINES = 120;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
+// Once a session id is known but its transcript file isn't on disk yet, retry the
+// file lookup at most this often (piggybacked on the timeline poll) until it
+// appears — the bounded successor to the removed 2s session probe.
+const TRANSCRIPT_RETRY_MS = 1000;
 // How long herdr must stay "idle" before we treat a turn as ended. herdr flips
 // to idle transiently between tool calls (prompt box flashes), so committing
 // immediately blanks the thinking indicator and fires a spurious result. A busy
@@ -162,6 +166,10 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
+  // A session id learned before its transcript file exists; retried on the poll
+  // until the file appears, then cleared (see TRANSCRIPT_RETRY_MS).
+  private pendingSessionId: string | null = null;
+  private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
 
@@ -215,7 +223,11 @@ export class PaneBridge {
   /** Pick the content source: the agent transcript when available (structured,
    *  lossless), else a ScreenTimeline fallback that scrapes the TUI. */
   private selectTimeline(): void {
-    if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId)) return;
+    if (this.agentSessionId) {
+      if (this.upgradeToTranscript(this.agentSessionId)) return;
+      // Known session, transcript file not written yet — the poll retries it.
+      this.pendingSessionId = this.agentSessionId;
+    }
     this.screen = new ScreenTimeline({
       read: () => this.readPane(),
       windowLines: OUTPUT_WINDOW_LINES,
@@ -287,12 +299,24 @@ export class PaneBridge {
    *  the screen fallback; a no-op once tailing. */
   noteSessionId(id: string): void {
     if (this.onTranscript || this.disposed) return;
-    this.upgradeToTranscript(id);
+    if (!this.upgradeToTranscript(id)) this.pendingSessionId = id;
   }
 
   private startPolling(): void {
     if (this.pollTimer || this.disposed) return;
     this.pollTimer = setInterval(() => {
+      // A session id known before its transcript existed: retry the file lookup
+      // (throttled) so a fresh turn upgrades off the screen fallback as soon as
+      // the jsonl lands — no dedicated timer. On success this tick polls it.
+      if (
+        !this.polling &&
+        !this.onTranscript &&
+        this.pendingSessionId &&
+        Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
+      ) {
+        this.lastUpgradeTryMs = Date.now();
+        if (this.upgradeToTranscript(this.pendingSessionId)) this.pendingSessionId = null;
+      }
       const tl = this.timeline;
       if (this.polling || !tl) return;
       this.polling = true;
