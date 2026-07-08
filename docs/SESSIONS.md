@@ -39,9 +39,8 @@ session **id**, never a path — see [§3](#3-no-transcript-path).)
   fields ignored; usage attached to the first emitted block then nulled.
 
 **Field-consumption notes:**
-- **`tool_result.is_error` is read.** The canonical error block is
-  `{ type:"tool_result", content, is_error:true, tool_use_id }` (Claude Code
-  `query.ts::createUserMessage`, and `QueryEngine.ts` sets `is_error` true/false).
+- **`tool_result.is_error` is read.** The canonical error block observed in the
+  jsonl is `{ type:"tool_result", content, is_error:true, tool_use_id }`.
   even-better emits `ok: b.is_error !== true` (`src/transcript.ts`), so a failed
   Claude tool call is reported as failed. (The Codex path already read status —
   see §2.)
@@ -154,7 +153,7 @@ multi-question or non-claude forms).
 ls -t ~/.claude/projects/*/*.jsonl | head -1
 python3 -c "import json,sys,collections; f=sorted(__import__('glob').glob('$HOME/.claude/projects/*/*.jsonl'))[-1]; \
   c=collections.Counter(json.loads(l).get('type') for l in open(f)); print(c)"   # record types
-# is_error present on error tool_result blocks (Claude Code source: query.ts::createUserMessage)
+# is_error present on error tool_result blocks (observed in the jsonl)
 
 # Codex: model lives in turn_context, tokens in token_count
 ROLL=$(ls -t "${CODEX_HOME:-$HOME/.codex}"/sessions/**/rollout-*.jsonl 2>/dev/null | head -1)
