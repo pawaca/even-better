@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, Timeline } from "./spine.js";
-import { JsonlTail } from "./jsonl-tail.js";
+import { JsonlTail, sinceFilter } from "./jsonl-tail.js";
 
 // Tail a Codex interactive rollout transcript
 // ($CODEX_HOME/sessions/YYYY/MM/DD/rollout-...<id>.jsonl, or
@@ -400,8 +400,8 @@ export class CodexTranscriptTimeline implements Timeline {
   private tail: JsonlTail;
   private parser = new CodexEntryParser();
 
-  constructor(filePath: string, fromStart = false) {
-    this.tail = new JsonlTail(filePath, (line) => this.parser.parse(line), fromStart);
+  constructor(filePath: string, fromStart = false, since?: number) {
+    this.tail = new JsonlTail(filePath, sinceFilter((line) => this.parser.parse(line), since), fromStart);
   }
 
   poll(): Promise<AgentEvent[]> {

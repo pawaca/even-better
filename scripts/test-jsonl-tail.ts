@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlTail } from "../src/jsonl-tail.js";
+import { JsonlTail, sinceFilter } from "../src/jsonl-tail.js";
 import type { AgentEvent } from "../src/spine.js";
 
 // each non-empty line → one `say` event carrying its text, so tests can read it back
@@ -57,4 +57,16 @@ test("JsonlTail with fromStart replays existing content, then tails", async () =
   assert.deepEqual(texts(await tail.readNew()), ["a", "b"]); // the first turn isn't lost
   appendFileSync(f, "c\n");
   assert.deepEqual(texts(await tail.readNew()), ["c"]); // then it tails new lines
+});
+
+test("sinceFilter drops older entries, keeps newer and un-timestamped ones", () => {
+  const since = Date.parse("2026-01-01T00:00:00Z");
+  const filtered = sinceFilter(parse, since);
+  assert.deepEqual(filtered(JSON.stringify({ timestamp: "2025-12-31T23:59:59Z" })), []); // older → dropped
+  assert.equal(texts(filtered(JSON.stringify({ timestamp: "2026-01-02T00:00:00Z" }))).length, 1); // newer → kept
+  assert.equal(texts(filtered(JSON.stringify({ type: "meta" }))).length, 1); // no timestamp → passes through
+});
+
+test("sinceFilter with no since is a passthrough (same function)", () => {
+  assert.equal(sinceFilter(parse, undefined), parse);
 });

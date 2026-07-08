@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, Timeline, Usage } from "./spine.js";
-import { JsonlTail } from "./jsonl-tail.js";
+import { JsonlTail, sinceFilter } from "./jsonl-tail.js";
 
 /** The model a Claude session is running, from the last assistant record's
  *  `message.model` in the jsonl — the structured source, instead of scraping the
@@ -192,8 +192,8 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
  *  heuristics. Returns null-safe by construction (caller checks the file). */
 export class TranscriptTimeline implements Timeline {
   private tail: JsonlTail;
-  constructor(filePath: string, fromStart = false) {
-    this.tail = new JsonlTail(filePath, parseEntry, fromStart);
+  constructor(filePath: string, fromStart = false, since?: number) {
+    this.tail = new JsonlTail(filePath, sinceFilter(parseEntry, since), fromStart);
   }
   poll(): Promise<AgentEvent[]> {
     return this.tail.readNew();

@@ -3,6 +3,23 @@ import type { AgentEvent } from "./spine.js";
 
 export type JsonlParser = (line: string) => AgentEvent[];
 
+/** Wrap a parser to drop entries older than `since` (epoch ms) by reading the
+ *  line's top-level ISO `timestamp`. Used when replaying a from-start transcript
+ *  so a resumed / pre-existing history isn't emitted — only content since attach.
+ *  Lines without a timestamp (meta records) fall through to the parser. */
+export function sinceFilter(parse: JsonlParser, since?: number): JsonlParser {
+  if (since === undefined) return parse;
+  return (line: string): AgentEvent[] => {
+    try {
+      const ts = (JSON.parse(line) as { timestamp?: string }).timestamp;
+      if (ts && Date.parse(ts) < since) return [];
+    } catch {
+      // not JSON / unexpected — let the real parser handle it
+    }
+    return parse(line);
+  };
+}
+
 /**
  * Incremental JSONL tailer: remembers the byte offset and returns only events
  * appended since the last call. Starts at the current end of file so attaching

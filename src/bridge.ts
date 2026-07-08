@@ -182,9 +182,11 @@ export class PaneBridge {
   agentSessionId: string | undefined;
   // True when the pane already had a session at attach (an agent that was running
   // before us) — its transcript is tailed from EOF so we don't replay history. A
-  // pane discovered session-less (session born while we watch) tails from the
-  // start, so the first turn isn't lost to the pre-upgrade window.
+  // pane discovered session-less tails from the start but only emits entries newer
+  // than `attachedAt`, so a first turn born while we watch isn't lost, yet a
+  // resumed/late-listed session's old history is not replayed to the glasses.
   private readonly attachedWithSession: boolean;
+  private readonly attachedAt = Date.now();
   state: AppState = "idle";
 
   private sub: StatusSub | null = null;
@@ -278,19 +280,21 @@ export class PaneBridge {
   }
 
   private upgradeToTranscript(id: string): boolean {
-    // A session born while we watched (attached session-less) is read from the
-    // start so its first turn isn't lost; an already-running agent is tailed from
-    // EOF so we don't replay its history.
-    const fromStart = !this.attachedWithSession;
+    // A session-less-at-attach pane reads from the start but only surfaces entries
+    // newer than attach — so a first turn born while we watch isn't lost, while a
+    // resumed or late-listed session's pre-attach history is skipped, not replayed.
+    // An already-running agent is tailed from EOF (no read of its whole history).
+    const since = this.attachedWithSession ? undefined : this.attachedAt;
+    const fromStart = since !== undefined;
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
       this.agentSessionId = id;
       this.screen?.dispose();
-      this.timeline = new TranscriptTimeline(file, fromStart);
+      this.timeline = new TranscriptTimeline(file, fromStart, since);
       this.screen = null;
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing transcript ${file}${fromStart ? " (from start)" : ""}`);
+      console.log(`[bridge ${this.paneId}] tailing transcript ${file}${fromStart ? " (from attach)" : ""}`);
       return true;
     }
     if (this.agent === "codex") {
@@ -298,10 +302,10 @@ export class PaneBridge {
       if (!file) return false;
       this.agentSessionId = id;
       this.screen?.dispose();
-      this.timeline = new CodexTranscriptTimeline(file, fromStart);
+      this.timeline = new CodexTranscriptTimeline(file, fromStart, since);
       this.screen = null;
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}${fromStart ? " (from start)" : ""}`);
+      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}${fromStart ? " (from attach)" : ""}`);
       return true;
     }
     return false;
