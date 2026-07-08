@@ -136,12 +136,28 @@ export function sseHandler(req: Request, res: Response): void {
 
   const s = bufFor(sessionId);
   const needReplay = req.query.needReplay === "true";
-  // Rebuild the reconnecting client's view. The app opens a fresh stream on every
-  // reconnect and clears its transcript, yet sends no Last-Event-ID/needReplay —
-  // so replay the buffered history on every connect, or a returning glass shows a
-  // blank pane. Coalescing keeps it cheap (a handful of frames, not the hundreds
-  // of tiny deltas held); the cap bounds a huge backlog so it can't flood.
-  if (s.messages.length > 0) {
+  const lastEventIdRaw = req.headers["last-event-id"];
+  const resumeFrom =
+    typeof lastEventIdRaw === "string" && /^\d+$/.test(lastEventIdRaw)
+      ? Number(lastEventIdRaw)
+      : null;
+  // Restore the reconnecting client's view without duplicating it.
+  //  - Last-Event-ID present (a standard EventSource auto-reconnect, which keeps
+  //    its view): replay ONLY the events it missed — exact frames, no coalescing,
+  //    so a kept view isn't doubled and no mid-block delta is dropped.
+  //  - Absent: the stream is fresh and the app has cleared its transcript, so
+  //    rebuild it from the coalesced recent history (else a returning glass is
+  //    blank). Coalescing collapses the hundreds of tiny text_delta frames the
+  //    buffer holds into a handful; the cap bounds a huge backlog.
+  // The app sends neither header today, so the rebuild path is what fixes the
+  // blank; the resume path guards a future/standard client against duplication.
+  if (resumeFrom !== null) {
+    for (const entry of s.messages) {
+      if (entry.id > resumeFrom) {
+        res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.msg)}\n\n`);
+      }
+    }
+  } else if (s.messages.length > 0) {
     const REPLAY_MAX = 120;
     for (const entry of coalesceReplay(s.messages).slice(-REPLAY_MAX)) {
       res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.msg)}\n\n`);
@@ -149,15 +165,13 @@ export function sseHandler(req: Request, res: Response): void {
   }
   s.clients.add(res);
   const connectedAt = Date.now();
-  // Diagnostic: reconnect gap (how long the glass had no live stream), whether
-  // the app asked for replay, and whether it sent a standard Last-Event-ID (if
-  // it does, honoring that header would give precise gap-free replay).
+  // Diagnostic: reconnect gap (how long the glass had no live stream) + whether
+  // the app asked for replay / sent a Last-Event-ID.
   const prevOff = lastDisconnectAt.get(sessionId);
   const gap = prevOff ? `${Math.round((connectedAt - prevOff) / 1000)}s` : "first";
-  const lastEventId = req.headers["last-event-id"];
   console.log(
     `[sse] connect session=${sessionId} reconnect_gap=${gap} needReplay=${needReplay} ` +
-      `lastEventId=${lastEventId ?? "-"} buffered=${s.messages.length} clients=${s.clients.size}`,
+      `lastEventId=${lastEventIdRaw ?? "-"} buffered=${s.messages.length} clients=${s.clients.size}`,
   );
 
   const heartbeat = setInterval(() => {

@@ -99,6 +99,50 @@ t(
   );
 }
 
+// With Last-Event-ID (a standard auto-reconnect that KEEPS its view), replay only
+// the missed gap — exact frames, no coalescing — so nothing already shown repeats.
+{
+  const sid = "test-resume-session";
+  emit(sid, { type: "text_delta", text: "aa" }); // id 1 (already seen)
+  emit(sid, { type: "text_delta", text: "bb" }); // id 2 (already seen)
+  emit(sid, { type: "tool_start", toolId: "t" }); // id 3 (missed)
+  emit(sid, { type: "text_delta", text: "cc" }); // id 4 (missed)
+
+  const writes: string[] = [];
+  let closeCb: (() => void) | undefined;
+  const res = {
+    setHeader() {},
+    flushHeaders() {},
+    write(s: string) {
+      writes.push(s);
+      return true;
+    },
+    socket: { on() {} },
+  } as unknown as Response;
+  const req = {
+    query: { sessionId: sid },
+    headers: { "last-event-id": "2" },
+    on(ev: string, cb: () => void) {
+      if (ev === "close") closeCb = cb;
+    },
+  } as unknown as Request;
+
+  sseHandler(req, res);
+  closeCb?.();
+
+  const replayed = writes
+    .filter((w) => w.startsWith("id:"))
+    .map((w) => JSON.parse(w.split("data: ")[1].split("\n")[0]));
+  t(
+    "resume replays only id>Last-Event-ID, uncoalesced, no dup",
+    replayed,
+    [
+      { type: "tool_start", toolId: "t" },
+      { type: "text_delta", text: "cc" },
+    ],
+  );
+}
+
 if (failed) {
   console.error(`\n${failed} test(s) failed`);
   process.exit(1);
