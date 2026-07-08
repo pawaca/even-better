@@ -143,12 +143,14 @@ export function permissionPresentation(
   menu: ParsedMenu | null,
   classified: ClassifiedMenu | null,
   pendingTool: PendingTool | undefined,
-  explain: Explanation,
-): "emit" | "ignore" | "notify" {
+): "emit" | "notify" {
   if (menu && classified?.kind === "permission") return "emit";
-  if (explain.visibleBlocker === false) return "ignore";
   if (pendingTool) return "emit";
   return "notify";
+}
+
+export function shouldIgnoreNonVisibleBlocker(menu: ParsedMenu | null, explain: Explanation): boolean {
+  return menu === null && explain.visibleBlocker === false;
 }
 
 export function ignoredBlockerAction(
@@ -556,6 +558,27 @@ export class PaneBridge {
     }
   }
 
+  private finishIgnoredBlocker(explain: Explanation): void {
+    logEvent("diag", this.paneId, {
+      blockedIgnored: {
+        rule: explain.rule ?? null,
+        visibleBlocker: explain.visibleBlocker ?? null,
+        reason: "non-visible-blocker",
+      },
+    });
+    this.currentMenu = null;
+    const action = ignoredBlockerAction(this.turnStartMs > 0, this.idleCanceledForAwaiting);
+    this.idleCanceledForAwaiting = false;
+    if (action === "idle") {
+      this.state = "idle";
+      this.stopStats();
+      emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
+    } else {
+      this.state = "busy";
+      if (action === "rearmIdle") this.scheduleIdleClose();
+    }
+  }
+
   private async emitBlockedMenu(): Promise<void> {
     // Give the TUI a beat to finish painting the menu before reading it.
     await new Promise((r) => setTimeout(r, 400));
@@ -597,6 +620,11 @@ export class PaneBridge {
         screenTail: screen.slice(-1200),
       },
     });
+
+    if (shouldIgnoreNonVisibleBlocker(menu, explain)) {
+      this.finishIgnoredBlocker(explain);
+      return;
+    }
 
     // Menu type: trust herdr's rule id first, then the backend's own kind hint
     // (cmux knows question vs permission from the hook that opened it), then
@@ -673,34 +701,20 @@ export class PaneBridge {
     // state to a live menu or a pending tool. herdr's weak whole_recent blocker
     // can match ordinary transcript prose plus a stale prompt marker; turning
     // that into Allow/Deny would create a fake approval.
-    const presentation = permissionPresentation(menu, classified, pendingTool, explain);
-    if (presentation !== "emit") {
+    const presentation = permissionPresentation(menu, classified, pendingTool);
+    if (presentation === "notify") {
       logEvent("diag", this.paneId, {
         blockedIgnored: {
           rule: explain.rule ?? null,
           visibleBlocker: explain.visibleBlocker ?? null,
-          reason: presentation === "ignore" ? "non-visible-blocker" : "unparseable-permission",
+          reason: "unparseable-permission",
         },
       });
-      if (presentation === "notify") {
-        emit(this.paneId, {
-          type: "notification",
-          title: "Agent waiting",
-          message: "An unparseable permission prompt is open — please respond in the terminal",
-        });
-        return;
-      }
-      this.currentMenu = null;
-      const action = ignoredBlockerAction(this.turnStartMs > 0, this.idleCanceledForAwaiting);
-      this.idleCanceledForAwaiting = false;
-      if (action === "idle") {
-        this.state = "idle";
-        this.stopStats();
-        emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
-      } else {
-        this.state = "busy";
-        if (action === "rearmIdle") this.scheduleIdleClose();
-      }
+      emit(this.paneId, {
+        type: "notification",
+        title: "Agent waiting",
+        message: "An unparseable permission prompt is open — please respond in the terminal",
+      });
       return;
     }
 
