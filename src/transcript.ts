@@ -192,8 +192,8 @@ export function summarizeTool(name: string, input: Record<string, unknown>): str
  *  heuristics. Returns null-safe by construction (caller checks the file). */
 export class TranscriptTimeline implements Timeline {
   private tail: JsonlTail;
-  constructor(filePath: string) {
-    this.tail = new JsonlTail(filePath, parseEntry);
+  constructor(filePath: string, fromStart = false) {
+    this.tail = new JsonlTail(filePath, parseEntry, fromStart);
   }
   poll(): Promise<AgentEvent[]> {
     return this.tail.readNew();

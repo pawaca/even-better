@@ -50,3 +50,11 @@ test("JsonlTail restarts from the end when the file is truncated", async () => {
   appendFileSync(f, "fresh\n");
   assert.deepEqual(texts(await tail.readNew()), ["fresh"]);
 });
+
+test("JsonlTail with fromStart replays existing content, then tails", async () => {
+  const f = scratch("a\nb\n");
+  const tail = new JsonlTail(f, parse, true); // fromStart: read from byte 0
+  assert.deepEqual(texts(await tail.readNew()), ["a", "b"]); // the first turn isn't lost
+  appendFileSync(f, "c\n");
+  assert.deepEqual(texts(await tail.readNew()), ["c"]); // then it tails new lines
+});

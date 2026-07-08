@@ -180,6 +180,11 @@ export class PaneBridge {
   agent: string;
   cwd: string;
   agentSessionId: string | undefined;
+  // True when the pane already had a session at attach (an agent that was running
+  // before us) — its transcript is tailed from EOF so we don't replay history. A
+  // pane discovered session-less (session born while we watch) tails from the
+  // start, so the first turn isn't lost to the pre-upgrade window.
+  private readonly attachedWithSession: boolean;
   state: AppState = "idle";
 
   private sub: StatusSub | null = null;
@@ -218,6 +223,7 @@ export class PaneBridge {
     this.agent = info.agent;
     this.cwd = info.cwd;
     this.agentSessionId = info.sessionId;
+    this.attachedWithSession = !!info.sessionId;
     this.state = toAppState(info.status);
   }
 
@@ -272,15 +278,19 @@ export class PaneBridge {
   }
 
   private upgradeToTranscript(id: string): boolean {
+    // A session born while we watched (attached session-less) is read from the
+    // start so its first turn isn't lost; an already-running agent is tailed from
+    // EOF so we don't replay its history.
+    const fromStart = !this.attachedWithSession;
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
       this.agentSessionId = id;
       this.screen?.dispose();
-      this.timeline = new TranscriptTimeline(file);
+      this.timeline = new TranscriptTimeline(file, fromStart);
       this.screen = null;
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     if (this.agent === "codex") {
@@ -288,10 +298,10 @@ export class PaneBridge {
       if (!file) return false;
       this.agentSessionId = id;
       this.screen?.dispose();
-      this.timeline = new CodexTranscriptTimeline(file);
+      this.timeline = new CodexTranscriptTimeline(file, fromStart);
       this.screen = null;
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     return false;
