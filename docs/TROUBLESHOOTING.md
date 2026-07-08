@@ -33,26 +33,28 @@ The bridge always prefers a structured transcript:
 - Codex: `$CODEX_HOME/sessions/**/rollout-*<session>.jsonl`, or
   `~/.codex/sessions/**/rollout-*<session>.jsonl` when `CODEX_HOME` is unset
 
-`ScreenTimeline` is only a fallback while herdr has not exposed
-`agent_session.value` yet, or when the matching transcript file cannot be found.
-The bridge probes for a session id every 2 seconds and upgrades automatically.
-Successful upgrades print one of these lines:
+For claude/codex the transcript is the **only** content source — there is no
+screen fallback. Until the session id resolves **and** its transcript file exists,
+the pane streams no content; the bridge retries the upgrade (session-id fetch +
+file lookup) on its poll, and also upgrades immediately off a status event that
+carries the session. On success it prints one of:
 
 ```text
 [bridge w1:p1] tailing transcript /path/to/claude.jsonl
 [bridge w1:p1] tailing codex transcript /path/to/rollout-....jsonl
 ```
 
-If a Codex pane unexpectedly stays on screen scraping:
+If a claude/codex pane shows **no content**:
 
-1. Check the startup banner has `agent : codex pane=...`.
-2. Check herdr is reporting an agent session id for that pane. If herdr has no
-   session id yet, the bridge cannot find a transcript and will keep probing.
-3. Check the rollout file exists under `$CODEX_HOME/sessions` or
-   `~/.codex/sessions`.
-4. Watch the console for `tailing codex transcript ...`. Until that appears,
-   dedup/filter behavior is the screen fallback, not structured transcript
-   behavior.
+1. Check the startup banner has `agent : codex pane=...` (the pane is detected).
+2. Check herdr is reporting an agent session id for that pane (herdr 0.7.2+ exposes
+   it via built-in detection). No session id ⇒ no transcript ⇒ no content — the
+   pane does **not** fall back to scraping the screen.
+3. Check the rollout/jsonl file exists under `$CODEX_HOME/sessions` /
+   `~/.codex/sessions` (codex) or `~/.claude/projects` (claude).
+4. Watch the console for `tailing … transcript …`. Until that appears the pane
+   streams nothing. Permission menus still work — those are read from the screen
+   directly, independent of the content path.
 
 ## Reading LOG_FILE
 
