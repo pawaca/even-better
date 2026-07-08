@@ -24,9 +24,10 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
   provider-neutral vocabulary; nothing downstream of it knows jsonl vs screen.
 - **`transcript.ts`** — `TranscriptTimeline`: parses Claude's session jsonl.
   Structured, lossless, **no heuristics**.
-- **`screen-timeline.ts`** — `ScreenTimeline`: TUI-scraping fallback. **All**
-  fragile heuristics (diff, volatile-line filter, dedup, echo suppression) live
-  here and nowhere else.
+- **`screen-timeline.ts`** — `ScreenTimeline`: TUI-scraping content source for
+  agents with **no transcript parser** (claude/codex are transcript-only — see the
+  invariant below). **All** fragile heuristics (diff, volatile-line filter, dedup,
+  echo suppression) live here and nowhere else.
 - **`render.ts`** — pure `string→string` glasses transforms (table reflow, box
   strip). Applied before emit.
 - **`multiplexer.ts`** — the `Multiplexer` seam (pane I/O) + normalized
@@ -129,7 +130,7 @@ app receives. Drive it end-to-end:
 
 1. Start a test server on an unused port: `PORT=3457 BRIDGE_TOKEN=... LOG_FILE=/tmp/eb.log LOG=trace pnpm start`.
 2. Create a scratch herdr workspace (`workspace.create` over the socket), run
-   `claude` in its pane, let the session-probe upgrade it to the transcript.
+   `claude` in its pane, let the bridge upgrade it to the transcript.
 3. Record with `tools/app-sim.ts <port> <token> <paneId> <out.jsonl>`, drive a
    turn via `POST /api/prompt`, then inspect the recording (or `LOG_FILE`) to
    confirm the exact events the app got.
