@@ -64,6 +64,36 @@ export function emit(sessionId: string, msg: object): void {
   }
 }
 
+/** Collapse buffered wire messages for replay: a run of consecutive text_delta
+ *  frames merges into one (the app renders the concatenation identically), so a
+ *  reconnecting client rebuilds the transcript from a handful of frames instead
+ *  of the hundreds of tiny deltas the buffer actually holds. Order is preserved;
+ *  each merged text frame keeps the id of its first delta. Any non-text event
+ *  (tool bubble, widget, prompt, result) breaks the run so blocks stay distinct. */
+export function coalesceReplay(
+  messages: { id: number; msg: object }[],
+): { id: number; msg: object }[] {
+  const out: { id: number; msg: object }[] = [];
+  let text: { id: number; parts: string[] } | null = null;
+  const flush = (): void => {
+    if (!text) return;
+    out.push({ id: text.id, msg: { type: "text_delta", text: text.parts.join("") } });
+    text = null;
+  };
+  for (const entry of messages) {
+    const m = entry.msg as { type?: string; text?: string };
+    if (m.type === "text_delta") {
+      if (text) text.parts.push(m.text ?? "");
+      else text = { id: entry.id, parts: [m.text ?? ""] };
+    } else {
+      flush();
+      out.push(entry);
+    }
+  }
+  flush();
+  return out;
+}
+
 export function getMessages(
   sessionId: string,
   after: number,
@@ -106,11 +136,14 @@ export function sseHandler(req: Request, res: Response): void {
 
   const s = bufFor(sessionId);
   const needReplay = req.query.needReplay === "true";
-  if (needReplay && s.messages.length > 0) {
-    // Cap the replay: the pane may have produced hours of output while no
-    // client was connected, and dumping the whole buffer floods the glasses.
-    const REPLAY_MAX = 20;
-    for (const entry of s.messages.slice(-REPLAY_MAX)) {
+  // Rebuild the reconnecting client's view. The app opens a fresh stream on every
+  // reconnect and clears its transcript, yet sends no Last-Event-ID/needReplay —
+  // so replay the buffered history on every connect, or a returning glass shows a
+  // blank pane. Coalescing keeps it cheap (a handful of frames, not the hundreds
+  // of tiny deltas held); the cap bounds a huge backlog so it can't flood.
+  if (s.messages.length > 0) {
+    const REPLAY_MAX = 120;
+    for (const entry of coalesceReplay(s.messages).slice(-REPLAY_MAX)) {
       res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.msg)}\n\n`);
     }
   }
