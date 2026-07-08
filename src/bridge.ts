@@ -137,6 +137,30 @@ function isPlanTool(name: string): boolean {
   return name === "update_plan" || name === "functions.update_plan";
 }
 
+type PendingTool = { name: string; input: Record<string, unknown> };
+
+export function permissionPresentation(
+  menu: ParsedMenu | null,
+  classified: ClassifiedMenu | null,
+  pendingTool: PendingTool | undefined,
+): "emit" | "notify" {
+  if (menu && classified?.kind === "permission") return "emit";
+  if (pendingTool) return "emit";
+  return "notify";
+}
+
+export function shouldIgnoreNonVisibleBlocker(menu: ParsedMenu | null, explain: Explanation): boolean {
+  return menu === null && explain.visibleBlocker === false;
+}
+
+export function ignoredBlockerAction(
+  turnStarted: boolean,
+  canceledIdleClose: boolean,
+): "busy" | "idle" | "rearmIdle" {
+  if (!turnStarted) return "idle";
+  return canceledIdleClose ? "rearmIdle" : "busy";
+}
+
 export type AppState = "idle" | "busy" | "awaiting";
 
 /** Normalized status → the bridge's turn-state view. `closed` is handled as a
@@ -170,6 +194,7 @@ export class PaneBridge {
   private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  private idleCanceledForAwaiting = false;
 
   private recentTyped = ""; // our injected prompt, to suppress its echo in the timeline
   private recentTypedAt = 0;
@@ -180,7 +205,7 @@ export class PaneBridge {
   private lastProseBlock = "";
   private turnSuccess = true;
   private turnResultText = "";
-  private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>();
+  private pendingTools = new Map<string, PendingTool>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
 
@@ -473,13 +498,16 @@ export class PaneBridge {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
       // between tool operations, not a real turn end.
+      this.idleCanceledForAwaiting = false;
       this.cancelIdle();
       if (this.state !== "busy") this.enterBusyTurn();
       return;
     }
 
     if (next === "awaiting") {
+      const canceledIdle = this.idleTimer !== null;
       this.cancelIdle();
+      this.idleCanceledForAwaiting = this.idleCanceledForAwaiting || canceledIdle;
       if (this.state !== "awaiting") {
         this.state = "awaiting";
         void this.emitBlockedMenu();
@@ -495,6 +523,10 @@ export class PaneBridge {
     // do NOT cancel on content: the final block often lands during the grace
     // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
     // so canceling there would strand the turn as "streaming" forever.
+    this.scheduleIdleClose();
+  }
+
+  private scheduleIdleClose(): void {
     if (this.state === "idle" || this.idleTimer) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
@@ -506,6 +538,7 @@ export class PaneBridge {
 
   private enterBusyTurn(): void {
     if (!this.turnStartMs) this.turnStartMs = Date.now();
+    this.idleCanceledForAwaiting = false;
     this.screen?.resetTurn(); // new turn — allow repeats of past content
     this.out.clear(); // drop any stale content from a prior turn
     this.turnInputTokens = 0;
@@ -522,6 +555,27 @@ export class PaneBridge {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
+    }
+  }
+
+  private finishIgnoredBlocker(explain: Explanation): void {
+    logEvent("diag", this.paneId, {
+      blockedIgnored: {
+        rule: explain.rule ?? null,
+        visibleBlocker: explain.visibleBlocker ?? null,
+        reason: "non-visible-blocker",
+      },
+    });
+    this.currentMenu = null;
+    const action = ignoredBlockerAction(this.turnStartMs > 0, this.idleCanceledForAwaiting);
+    this.idleCanceledForAwaiting = false;
+    if (action === "idle") {
+      this.state = "idle";
+      this.stopStats();
+      emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
+    } else {
+      this.state = "busy";
+      if (action === "rearmIdle") this.scheduleIdleClose();
     }
   }
 
@@ -566,6 +620,11 @@ export class PaneBridge {
         screenTail: screen.slice(-1200),
       },
     });
+
+    if (shouldIgnoreNonVisibleBlocker(menu, explain)) {
+      this.finishIgnoredBlocker(explain);
+      return;
+    }
 
     // Menu type: trust herdr's rule id first, then the backend's own kind hint
     // (cmux knows question vs permission from the hook that opened it), then
@@ -638,8 +697,29 @@ export class PaneBridge {
       return;
     }
 
+    // Permission: only emit an actionable app prompt when we can tie the blocked
+    // state to a live menu or a pending tool. herdr's weak whole_recent blocker
+    // can match ordinary transcript prose plus a stale prompt marker; turning
+    // that into Allow/Deny would create a fake approval.
+    const presentation = permissionPresentation(menu, classified, pendingTool);
+    if (presentation === "notify") {
+      logEvent("diag", this.paneId, {
+        blockedIgnored: {
+          rule: explain.rule ?? null,
+          visibleBlocker: explain.visibleBlocker ?? null,
+          reason: "unparseable-permission",
+        },
+      });
+      emit(this.paneId, {
+        type: "notification",
+        title: "Agent waiting",
+        message: "An unparseable permission prompt is open — please respond in the terminal",
+      });
+      return;
+    }
+
     // Permission: options from the parsed menu, or synthesized standard ones
-    // (claude permission menus are highly regular: 1=Yes … last=No/Esc).
+    // when a structured pending tool proves an approval is actually open.
     const effective: ParsedMenu & ClassifiedMenu =
       menu && classified?.kind === "permission"
         ? { ...menu, ...classified }

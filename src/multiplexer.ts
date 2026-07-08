@@ -30,6 +30,7 @@ export interface Explanation {
   rule?: string;
   state?: string;
   evidence?: string;
+  visibleBlocker?: boolean;
 }
 
 export interface StatusSub {
