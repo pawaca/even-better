@@ -70,3 +70,11 @@ test("sinceFilter drops older entries, keeps newer and un-timestamped ones", () 
 test("sinceFilter with no since is a passthrough (same function)", () => {
   assert.equal(sinceFilter(parse, undefined), parse);
 });
+
+test("JsonlTail fromStart caps the read to the last maxReplayBytes", async () => {
+  const f = scratch("AAAA\nBBBB\nRECENT\n"); // 17 bytes; last 7 ≈ "RECENT\n"
+  const tail = new JsonlTail(f, parse, true, 7);
+  const got = texts(await tail.readNew());
+  assert.ok(got.includes("RECENT")); // recent tail read
+  assert.ok(!got.includes("AAAA") && !got.includes("BBBB")); // old history never read
+});

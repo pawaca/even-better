@@ -20,12 +20,18 @@ export function sinceFilter(parse: JsonlParser, since?: number): JsonlParser {
   };
 }
 
+// Cap for a `fromStart` replay: read at most the last MB, so discovering a large
+// existing/resumed transcript late doesn't read+parse the whole history to catch
+// up (the recent, since-attach content lives at the tail). A partial first line
+// from mid-file simply fails to parse and is skipped.
+export const MAX_REPLAY_BYTES = 1024 * 1024;
+
 /**
  * Incremental JSONL tailer: remembers the byte offset and returns only events
  * appended since the last call. Starts at the current end of file so attaching
  * to a live session never replays its history — pass `fromStart` to instead read
- * from byte 0, for a session that was created while we were already watching (its
- * whole file is the current session, so replaying it captures the first turn).
+ * from near the start (capped to the last `maxReplayBytes`), for a session that
+ * appeared while we were already watching, so the first turn isn't lost.
  */
 export class JsonlTail {
   private offset: number;
@@ -35,8 +41,10 @@ export class JsonlTail {
     readonly filePath: string,
     private readonly parseLine: JsonlParser,
     fromStart = false,
+    maxReplayBytes = MAX_REPLAY_BYTES,
   ) {
-    this.offset = fromStart ? 0 : statSync(filePath).size;
+    const size = statSync(filePath).size;
+    this.offset = fromStart ? Math.max(0, size - maxReplayBytes) : size;
   }
 
   async readNew(): Promise<AgentEvent[]> {
