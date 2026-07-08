@@ -53,7 +53,7 @@ interface ContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string | { type: string; text?: string }[];
-  is_error?: boolean; // set by Claude Code on a failed tool_result (query.ts)
+  is_error?: boolean; // present (true) on a failed tool_result, observed in the jsonl
 }
 
 interface Entry {
