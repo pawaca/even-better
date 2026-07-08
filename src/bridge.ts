@@ -137,6 +137,19 @@ function isPlanTool(name: string): boolean {
   return name === "update_plan" || name === "functions.update_plan";
 }
 
+type PendingTool = { name: string; input: Record<string, unknown> };
+
+export function permissionPresentation(
+  menu: ParsedMenu | null,
+  classified: ClassifiedMenu | null,
+  pendingTool: PendingTool | undefined,
+  explain: Explanation,
+): "emit" | "ignore" | "notify" {
+  if (menu && classified?.kind === "permission") return "emit";
+  if (pendingTool) return "emit";
+  return explain.visibleBlocker === false ? "ignore" : "notify";
+}
+
 export type AppState = "idle" | "busy" | "awaiting";
 
 /** Normalized status → the bridge's turn-state view. `closed` is handled as a
@@ -180,7 +193,7 @@ export class PaneBridge {
   private lastProseBlock = "";
   private turnSuccess = true;
   private turnResultText = "";
-  private pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>();
+  private pendingTools = new Map<string, PendingTool>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
 
@@ -638,8 +651,36 @@ export class PaneBridge {
       return;
     }
 
+    // Permission: only emit an actionable app prompt when we can tie the blocked
+    // state to a live menu or a pending tool. herdr's weak whole_recent blocker
+    // can match ordinary transcript prose plus a stale prompt marker; turning
+    // that into Allow/Deny would create a fake approval.
+    const presentation = permissionPresentation(menu, classified, pendingTool, explain);
+    if (presentation !== "emit") {
+      logEvent("diag", this.paneId, {
+        blockedIgnored: {
+          rule: explain.rule ?? null,
+          visibleBlocker: explain.visibleBlocker ?? null,
+          reason: presentation === "ignore" ? "non-visible-blocker" : "unparseable-permission",
+        },
+      });
+      if (presentation === "notify") {
+        emit(this.paneId, {
+          type: "notification",
+          title: "Agent waiting",
+          message: "An unparseable permission prompt is open — please respond in the terminal",
+        });
+        return;
+      }
+      this.currentMenu = null;
+      this.state = "idle";
+      this.stopStats();
+      await this.emitTurnResult();
+      return;
+    }
+
     // Permission: options from the parsed menu, or synthesized standard ones
-    // (claude permission menus are highly regular: 1=Yes … last=No/Esc).
+    // when a structured pending tool proves an approval is actually open.
     const effective: ParsedMenu & ClassifiedMenu =
       menu && classified?.kind === "permission"
         ? { ...menu, ...classified }

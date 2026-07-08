@@ -236,6 +236,7 @@ export interface AgentExplain {
   rule?: string;
   state?: string;
   evidence?: string;
+  visibleBlocker?: boolean;
 }
 
 interface EvaluatedRule {
@@ -251,7 +252,7 @@ interface EvaluatedRule {
  *  reduce to the highest-priority matched rule (what the CLI reports as the
  *  active `rule:`). Used to type blocked menus without our own regexes. */
 export async function agentExplain(target: string): Promise<AgentExplain> {
-  const r = await call<{ explain?: { evaluated_rules?: EvaluatedRule[]; state?: string } }>(
+  const r = await call<{ explain?: { evaluated_rules?: EvaluatedRule[]; state?: string; visible_blocker?: boolean } }>(
     "agent.explain",
     { target },
   );
@@ -266,6 +267,7 @@ export async function agentExplain(target: string): Promise<AgentExplain> {
     rule: best?.id,
     state: best?.state ?? e?.state,
     evidence: best?.evidence?.region_preview,
+    visibleBlocker: e?.visible_blocker,
   };
 }
 
