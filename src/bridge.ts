@@ -151,6 +151,10 @@ export function permissionPresentation(
   return "notify";
 }
 
+export function ignoredBlockerState(turnStarted: boolean): "busy" | "idle" {
+  return turnStarted ? "busy" : "idle";
+}
+
 export type AppState = "idle" | "busy" | "awaiting";
 
 /** Normalized status → the bridge's turn-state view. `closed` is handled as a
@@ -674,11 +678,9 @@ export class PaneBridge {
         return;
       }
       this.currentMenu = null;
-      this.state = "idle";
-      this.stopStats();
-      if (this.turnStartMs) {
-        await this.emitTurnResult();
-      } else {
+      this.state = ignoredBlockerState(this.turnStartMs > 0);
+      if (this.state === "idle") {
+        this.stopStats();
         emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
       }
       return;

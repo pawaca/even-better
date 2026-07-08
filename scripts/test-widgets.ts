@@ -1,4 +1,4 @@
-import { permissionPresentation, planProgress, structuredQuestion, todoProgress } from "../src/bridge.js";
+import { ignoredBlockerState, permissionPresentation, planProgress, structuredQuestion, todoProgress } from "../src/bridge.js";
 const t=(n:string,g:unknown,w:unknown)=>console.log(`${JSON.stringify(g)===JSON.stringify(w)?"✅":"❌"} ${n}: ${JSON.stringify(g)}`);
 t("mid", todoProgress({todos:[{status:"completed"},{status:"in_progress",content:"step 2"},{status:"pending"}]}), {completed:1,total:3,current:"step 2"});
 t("done", todoProgress({todos:[{status:"completed"},{status:"completed"}]}), {completed:2,total:2,current:"All done"});
@@ -28,3 +28,5 @@ t("perm-non-visible-pending-tool", permissionPresentation(null, null, {name:"Bas
 t("perm-non-visible", permissionPresentation(null, null, undefined, {rule:"weak_blocker",visibleBlocker:false}), "ignore");
 t("perm-visible-unparseable", permissionPresentation(null, null, undefined, {rule:"live_strong_blocker",visibleBlocker:true}), "notify");
 t("perm-unknown-backend", permissionPresentation(null, null, undefined, {}), "notify");
+t("ignored-blocker-startup", ignoredBlockerState(false), "idle");
+t("ignored-blocker-active-turn", ignoredBlockerState(true), "busy");
