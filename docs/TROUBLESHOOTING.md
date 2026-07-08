@@ -106,11 +106,12 @@ Structured transcript dedupe is intentionally narrow:
   echo suppression, and multiset dedupe. Those heuristics do not run over a
   structured transcript.
 
-When output looks duplicated, first identify the source:
+When output looks duplicated, first identify the source (for claude/codex it is
+always the transcript — they never scrape for content):
 
 1. If the console says `tailing ... transcript`, inspect the corresponding
    transcript lines and `LOG_FILE`.
-2. If not, the pane is still on `ScreenTimeline`; enable default stream tracing
+2. If not (a non-claude/codex pane on `ScreenTimeline`), enable default stream tracing
    and look for `capture`, `send`, and `drop` lines in the console.
 
 ## Stuck on Tokens or No Final Result

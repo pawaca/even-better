@@ -55,8 +55,9 @@ If both herdr and cmux are running, pick one with `MUX=herdr` or `MUX=cmux`.
   everything else follow whatever the pane's agent is configured with.
 - **Lossless output.** It reads the agent's structured session transcript
   (Claude/Codex jsonl) as the source of truth, so what reaches the glasses
-  matches the pane without screen-scraping guesswork. (It falls back to reading
-  the screen only briefly, before the session's transcript is available.)
+  matches the pane without screen-scraping guesswork. (Until that transcript is
+  available — a fresh agent before its session exists — it streams no content
+  yet, rather than scraping the screen.)
 - **Interactive.** Permission prompts and questions become menus on the glasses
   you can answer; the answer is sent back into the pane. Prompts and interrupts
   from the glasses drive the same pane.
@@ -117,8 +118,8 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 ## Caveats
 
 - Cost isn't computed (token counts are reported; `costUsd` is always 0).
-- A pane whose transcript isn't readable yet (e.g. a fresh agent before its
-  session id exists) falls back to lossy screen scraping until it is.
+- A claude/codex pane shows content only from its structured transcript — a fresh
+  agent shows nothing until its session's jsonl exists (no lossy screen scraping).
 - Permission menus are read from the screen; exotic prompts fall back to a
   "check your terminal" notification.
 - even-better only *mirrors* — it won't start a brand-new session from the
