@@ -31,10 +31,14 @@ means different things:**
 - **cmux:** no hook ⇒ the pane is not an agent to cmux ⇒ absent from `listPanes()`
   ⇒ **invisible** to even-better. (codex additionally needs its first prompt before
   it registers at all.)
-- **herdr:** no hook ⇒ herdr still detects and exposes the pane, and even-better
-  mirrors it through the `ScreenTimeline` fallback (`src/bridge.ts:173-188`) — you
-  lose only the **structured transcript** (`sessionId()` is empty, so it scrapes
-  the screen instead of tailing the jsonl). Visible, lower fidelity.
+- **herdr:** no session id ⇒ herdr still detects and lists the pane, but for
+  claude/codex even-better mirrors **only** the structured transcript — with no
+  session id it has no content source and streams no output until one resolves. It
+  does **not** fall back to scraping the screen for content (that only degraded the
+  pre-transcript window with boot/TUI noise). The pane stays listed and its
+  permission menus are still read from the screen; only streamed content waits on
+  the transcript. (herdr 0.7.2+ exposes the session via built-in detection, so this
+  mostly affects older herdr / non-standard transcript paths.)
 
 **Related host limitation (one agent type at a time):** even-better's `/api/info`
 and the QR connection report a **single** `provider` — the focused/first agent's
