@@ -161,5 +161,5 @@ grep -o '"model":"[^"]*"' "$ROLL" | sort -u          # turn_context.payload.mode
 # codex source: codex-rs/protocol/src/protocol.rs::TurnContextItem (pub model: String)
 
 # Round-trip our parser against current jsonl:
-npx tsx scripts/test-transcript.ts
+npx tsx --test scripts/test-transcript.ts
 ```
