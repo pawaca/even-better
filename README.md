@@ -76,6 +76,7 @@ Everything is optional — `pnpm start` works with no flags.
 | `LOG` | `normal` | Logging mode: `off`, `normal`, `debug`, or `trace` |
 | `LOG_FILE` | `/tmp/even-better-<id>.events.log` | JSONL event log path |
 | `QR` | `1` | Print a QR code. Set `0` to print only the URL |
+| `STREAM_TICK_MS` | `140` | Milliseconds between text-reveal frames on the glasses. Larger = text types out slower (easier to read before it scrolls); smaller = faster |
 
 The phone must be able to reach your machine over the network (same LAN,
 Tailscale, etc.).
