@@ -35,6 +35,10 @@ const OUTPUT_WINDOW_LINES = 120;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
+// While on the screen fallback, re-fetch the pane's session id and retry the
+// transcript lookup at most this often (piggybacked on the timeline poll) — the
+// bounded successor to the removed dedicated 2s session probe.
+const TRANSCRIPT_RETRY_MS = 1000;
 // How long herdr must stay "idle" before we treat a turn as ended. herdr flips
 // to idle transiently between tool calls (prompt box flashes), so committing
 // immediately blanks the thinking indicator and fires a spurious result. A busy
@@ -162,7 +166,8 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
-  private sessionProbeTimer: NodeJS.Timeout | null = null;
+  // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
+  private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
 
@@ -203,7 +208,7 @@ export class PaneBridge {
     if (this.disposed) return;
     this.sub = getMux().watchStatus(
       this.paneId,
-      (s) => this.onStatus(s),
+      (s, session) => this.onStatus(s, session),
       (err) => this.onSubClosed(err),
     );
     // A pane can already be blocked when the bridge discovers it (e.g. trust
@@ -211,7 +216,6 @@ export class PaneBridge {
     if (this.state === "awaiting") void this.emitBlockedMenu();
     this.selectTimeline();
     this.startPolling();
-    if (!this.onTranscript) this.startSessionProbe();
   }
 
   /** Pick the content source: the agent transcript when available (structured,
@@ -259,34 +263,6 @@ export class PaneBridge {
     return false;
   }
 
-  /** A fresh pane may have no session id until its first prompt lands. Probe
-   *  herdr every 2s so the bridge upgrades from the screen fallback to the
-   *  transcript as soon as the session exists. */
-  private startSessionProbe(): void {
-    if (this.sessionProbeTimer || this.onTranscript || this.disposed) return;
-    if (this.agent !== "claude" && this.agent !== "codex") return;
-    this.sessionProbeTimer = setInterval(() => {
-      if (this.onTranscript || this.disposed) {
-        this.clearProbe();
-        return;
-      }
-      void getMux()
-        .sessionId(this.paneId)
-        .then((id) => {
-          if (!id || this.onTranscript) return;
-          if (this.upgradeToTranscript(id)) this.clearProbe();
-        })
-        .catch(() => {});
-    }, 2000);
-  }
-
-  private clearProbe(): void {
-    if (this.sessionProbeTimer) {
-      clearInterval(this.sessionProbeTimer);
-      this.sessionProbeTimer = null;
-    }
-  }
-
   /** While a turn runs, push a live elapsed/token counter every 10s. The app
    *  renders `running_stats` as a single widget it overwrites in place. */
   private startStats(): void {
@@ -312,16 +288,38 @@ export class PaneBridge {
     }
   }
 
-  /** Manager hook: a session id became known (e.g. from agent.list). Upgrade to
-   *  the transcript if we are still on the screen fallback. */
+  /** A session id became known — from agent.list (manager) or a status event
+   *  that carried it (multiplexer). Upgrade to the transcript if we are still on
+   *  the screen fallback; a no-op once tailing. */
   noteSessionId(id: string): void {
     if (this.onTranscript || this.disposed) return;
-    if (this.upgradeToTranscript(id)) this.clearProbe();
+    this.upgradeToTranscript(id);
   }
 
   private startPolling(): void {
     if (this.pollTimer || this.disposed) return;
     this.pollTimer = setInterval(() => {
+      // Resolve the transcript off the screen fallback, throttled, on this
+      // existing timer (no dedicated probe). Re-fetch the pane's CURRENT session
+      // each time and try the upgrade — one path that covers a lagging jsonl, a
+      // session that later changes, and older herdr that never pushed
+      // agent_session on the status event (so we don't wait on an app /sessions
+      // poll). A status event that carries the session upgrades sooner via
+      // noteSessionId; this is the fallback. On success a later tick polls it.
+      if (
+        !this.polling &&
+        !this.onTranscript &&
+        (this.agent === "claude" || this.agent === "codex") &&
+        Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
+      ) {
+        this.lastUpgradeTryMs = Date.now();
+        void getMux()
+          .sessionId(this.paneId)
+          .then((id) => {
+            if (id && !this.onTranscript) this.noteSessionId(id);
+          })
+          .catch(() => {});
+      }
       const tl = this.timeline;
       if (this.polling || !tl) return;
       this.polling = true;
@@ -460,11 +458,15 @@ export class PaneBridge {
 
   // ── status transitions ───────────────────────────────
 
-  private onStatus(raw: PaneStatus): void {
+  private onStatus(raw: PaneStatus, session?: string): void {
     if (raw === "closed") {
       this.dispose();
       return;
     }
+    // The backend hands us the session id on the same event that reveals it
+    // (herdr's status event, cmux's SessionStart-refreshed maps) — upgrade to the
+    // transcript here instead of polling for it.
+    if (session) this.noteSessionId(session);
     const next = toAppState(raw);
     console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (mux: ${raw})`);
 
@@ -889,7 +891,6 @@ export class PaneBridge {
     if (this.disposed) return;
     this.disposed = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
-    this.clearProbe();
     this.stopStats();
     this.cancelIdle();
     this.out.clear();

@@ -142,7 +142,7 @@ interface SurfaceMeta {
 }
 
 interface Listener {
-  onStatus: (s: PaneStatus) => void;
+  onStatus: (s: PaneStatus, session?: string) => void;
   onClose: (err?: Error) => void;
 }
 
@@ -287,7 +287,7 @@ export class CmuxMultiplexer implements Multiplexer {
 
   watchStatus(
     paneId: string,
-    onStatus: (s: PaneStatus) => void,
+    onStatus: (s: PaneStatus, session?: string) => void,
     onClose: (err?: Error) => void,
   ): StatusSub {
     this.listeners.set(paneId, { onStatus, onClose });
@@ -515,7 +515,10 @@ export class CmuxMultiplexer implements Multiplexer {
       this.lastStatus.delete(surfaceId);
       this.lastKind.delete(surfaceId);
     }
-    this.listeners.get(surfaceId)?.onStatus(status);
+    // Carry the surface's session (SessionStart refreshed surfaceMeta) so the
+    // bridge upgrades to the transcript on this event, no polling. Undefined
+    // until the hook file names it, or after a close prunes surfaceMeta above.
+    this.listeners.get(surfaceId)?.onStatus(status, this.surfaceMeta.get(surfaceId)?.session);
   }
 
   // ── pane I/O ─────────────────────────────────────────
