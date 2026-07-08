@@ -17,9 +17,11 @@ and prompts from the glasses are typed into the pane.
 ```
 
 > Unofficial project — not affiliated with or endorsed by Even Realities,
-> Anthropic, herdr, or cmux. The wire protocol is a clean-room, compatible
-> implementation of what `@evenrealities/even-terminal` speaks; no code from that
-> package is included.
+> Anthropic, OpenAI, herdr, or cmux. The wire protocol is an independent,
+> interoperable implementation of what `@evenrealities/even-terminal` speaks;
+> agent output is read from the local session files Claude Code and Codex write on
+> your own machine. No code from those projects is included, and their formats are
+> used as observed and may change.
 
 ## Prerequisites
 

@@ -1,8 +1,9 @@
 # even-terminal protocol (as spoken by even-better)
 
-even-better is a **clean-room** implementation of the wire protocol the stock
-Even app speaks with `@evenrealities/even-terminal` — there is no SDK dependency,
-so this file is the reference for what we actually emit and accept. The transport
+even-better is an **independent, interoperable** implementation of the wire
+protocol the stock Even app speaks with `@evenrealities/even-terminal` — matched
+to interoperate, with no SDK dependency and no code from that package, so this
+file is the reference for what we actually emit and accept. The transport
 is plain JSON: outbound events are Server-Sent Events on `GET /api/events`
 (`id: <n>\ndata: <json>\n\n`); inbound is ordinary HTTP. Replay on reconnect is
 driven by `?needReplay=true` / `GET /messages?after=N`, **not** by `Last-Event-ID`
