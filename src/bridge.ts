@@ -151,8 +151,12 @@ export function permissionPresentation(
   return "notify";
 }
 
-export function ignoredBlockerState(turnStarted: boolean): "busy" | "idle" {
-  return turnStarted ? "busy" : "idle";
+export function ignoredBlockerAction(
+  turnStarted: boolean,
+  canceledIdleClose: boolean,
+): "busy" | "idle" | "rearmIdle" {
+  if (!turnStarted) return "idle";
+  return canceledIdleClose ? "rearmIdle" : "busy";
 }
 
 export type AppState = "idle" | "busy" | "awaiting";
@@ -188,6 +192,7 @@ export class PaneBridge {
   private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  private idleCanceledForAwaiting = false;
 
   private recentTyped = ""; // our injected prompt, to suppress its echo in the timeline
   private recentTypedAt = 0;
@@ -491,14 +496,17 @@ export class PaneBridge {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
       // between tool operations, not a real turn end.
+      this.idleCanceledForAwaiting = false;
       this.cancelIdle();
       if (this.state !== "busy") this.enterBusyTurn();
       return;
     }
 
     if (next === "awaiting") {
+      const canceledIdle = this.idleTimer !== null;
       this.cancelIdle();
       if (this.state !== "awaiting") {
+        this.idleCanceledForAwaiting = canceledIdle;
         this.state = "awaiting";
         void this.emitBlockedMenu();
       }
@@ -513,6 +521,10 @@ export class PaneBridge {
     // do NOT cancel on content: the final block often lands during the grace
     // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
     // so canceling there would strand the turn as "streaming" forever.
+    this.scheduleIdleClose();
+  }
+
+  private scheduleIdleClose(): void {
     if (this.state === "idle" || this.idleTimer) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
@@ -524,6 +536,7 @@ export class PaneBridge {
 
   private enterBusyTurn(): void {
     if (!this.turnStartMs) this.turnStartMs = Date.now();
+    this.idleCanceledForAwaiting = false;
     this.screen?.resetTurn(); // new turn — allow repeats of past content
     this.out.clear(); // drop any stale content from a prior turn
     this.turnInputTokens = 0;
@@ -678,10 +691,15 @@ export class PaneBridge {
         return;
       }
       this.currentMenu = null;
-      this.state = ignoredBlockerState(this.turnStartMs > 0);
-      if (this.state === "idle") {
+      const action = ignoredBlockerAction(this.turnStartMs > 0, this.idleCanceledForAwaiting);
+      this.idleCanceledForAwaiting = false;
+      if (action === "idle") {
+        this.state = "idle";
         this.stopStats();
         emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
+      } else {
+        this.state = "busy";
+        if (action === "rearmIdle") this.scheduleIdleClose();
       }
       return;
     }
