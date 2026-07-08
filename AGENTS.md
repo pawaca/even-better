@@ -51,9 +51,10 @@ Multiplexer(herdr) × Agent(claude)  →  AgentEvent stream  →  Sink (render +
 
 - `pnpm start` — run the server (prints QR). No build step; runs via `tsx`.
 - `pnpm check` — `tsc --noEmit`. Must pass before every commit.
-- `npx tsx scripts/test-transcript.ts` (and `test-render`, `test-diff-unit`,
-  `test-widgets`, `test-menu`) — pure-function unit tests. Run the relevant one
-  after touching its module.
+- `pnpm test` — runs every `scripts/test-*.ts` suite via the `node:test` runner.
+  Run one suite after touching its module with
+  `npx tsx --test scripts/test-transcript.ts` (or `test-render`, `test-diff-unit`,
+  `test-widgets`, `test-menu`, etc.) — pure-function unit tests.
 - End-to-end: `tools/app-sim.ts` records what a connected app receives;
   `tools/analyze-sim.py` scores a recording. See "Verification" below.
 

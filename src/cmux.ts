@@ -92,15 +92,19 @@ function pidAlive(pid: number): boolean {
 /** A session cmux still lists whose process is gone AND that is not marked
  *  restorable — a stale zombie to hide. A dead pid with `isRestorable === true`
  *  is a hibernated/resumable session (cmux intentionally killed the idle process
- *  and can bring it back — see cmux Agent Hibernation), so it is kept. */
-function isStaleZombie(e: HookSessionEntry): boolean {
-  return e.pid !== undefined && !pidAlive(e.pid) && e.isRestorable !== true;
+ *  and can bring it back — see cmux Agent Hibernation), so it is kept. `isAlive`
+ *  is injectable for tests; it defaults to a real `kill(pid, 0)` probe. */
+export function isStaleZombie(
+  e: HookSessionEntry,
+  isAlive: (pid: number) => boolean = pidAlive,
+): boolean {
+  return e.pid !== undefined && !isAlive(e.pid) && e.isRestorable !== true;
 }
 
 /** Agent session ids arrive prefixed by source (`claude-<uuid>`) in events but
  *  bare (`<uuid>`) in the hook file and `checkpoint_id`. Reduce to the trailing
  *  UUID so both forms compare equal; fall back to a leading-source strip. */
-function bareSession(id: string): string {
+export function bareSession(id: string): string {
   const uuid = id.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   if (uuid) return uuid[0];
   const m = id.match(/^[a-z]+-(.+)$/);
@@ -120,7 +124,7 @@ const KEY_MAP: Record<string, string> = {
 
 // ── hook-sessions file shape (only the fields we read) ──
 
-interface HookSessionEntry {
+export interface HookSessionEntry {
   cwd?: string;
   surfaceId?: string;
   workspaceId?: string;
@@ -128,17 +132,67 @@ interface HookSessionEntry {
   pid?: number;
   isRestorable?: boolean;
 }
-interface HookSessionsFile {
+export interface HookSessionsFile {
   activeSessionsBySurface?: Record<string, { sessionId?: string }>;
   activeSessionsByWorkspace?: Record<string, { sessionId?: string }>;
   sessions?: Record<string, HookSessionEntry>;
 }
 
-interface SurfaceMeta {
+export interface SurfaceMeta {
   agent: string;
   cwd: string;
   workspaceId: string | undefined;
   session: string; // bare session id
+}
+
+/** Fold one agent's parsed hook-sessions file into the routing maps (first writer
+ *  per surface wins). Pure — the fs read + per-agent loop stay in refreshMaps;
+ *  `isAlive` is injectable for tests. Mirrors cmux's three indices: the
+ *  active-surface map (skip stale zombies, keep restorable dead-pid entries), the
+ *  sessions map (only pid-alive `--command` launches with their own surfaceId),
+ *  and the workspace index (skip stale zombies). */
+export function foldHookSessions(
+  agent: string,
+  data: HookSessionsFile,
+  out: {
+    surfaceMeta: Map<string, SurfaceMeta>;
+    sessionToSurface: Map<string, string>;
+    workspaceToSurface: Map<string, string>;
+  },
+  isAlive: (pid: number) => boolean = pidAlive,
+): void {
+  const active = data.activeSessionsBySurface ?? {};
+  const sessions = data.sessions ?? {};
+  const add = (surfaceId: string, bare: string, entry: HookSessionEntry): void => {
+    if (out.surfaceMeta.has(surfaceId)) return;
+    out.surfaceMeta.set(surfaceId, {
+      agent,
+      cwd: entry.cwd ?? "",
+      workspaceId: entry.workspaceId,
+      session: bare,
+    });
+    out.sessionToSurface.set(bare, surfaceId);
+    if (entry.workspaceId) out.workspaceToSurface.set(entry.workspaceId, surfaceId);
+  };
+  for (const [surfaceId, ref] of Object.entries(active)) {
+    const sid = ref?.sessionId;
+    if (!sid) continue;
+    const entry = sessions[sid] ?? {};
+    if (isStaleZombie(entry, isAlive)) continue;
+    add(surfaceId, bareSession(sid), entry);
+  }
+  for (const [sid, entry] of Object.entries(sessions)) {
+    if (entry.surfaceId && entry.pid && isAlive(entry.pid)) {
+      add(entry.surfaceId, bareSession(entry.sessionId ?? sid), entry);
+    }
+  }
+  for (const ref of Object.values(data.activeSessionsByWorkspace ?? {})) {
+    const sid = ref?.sessionId;
+    const entry = sid ? sessions[sid] : undefined;
+    if (!sid || !entry?.surfaceId) continue;
+    if (isStaleZombie(entry, isAlive)) continue;
+    add(entry.surfaceId, bareSession(sid), entry);
+  }
 }
 
 interface Listener {
@@ -198,51 +252,11 @@ export class CmuxMultiplexer implements Multiplexer {
         continue;
       }
       if (!isRecord(parsed)) continue;
-      const data = parsed as HookSessionsFile;
-      const active = data.activeSessionsBySurface ?? {};
-      const sessions = data.sessions ?? {};
-      const add = (surfaceId: string, bare: string, entry: HookSessionEntry): void => {
-        if (surfaceMeta.has(surfaceId)) return;
-        surfaceMeta.set(surfaceId, {
-          agent,
-          cwd: entry.cwd ?? "",
-          workspaceId: entry.workspaceId,
-          session: bare,
-        });
-        sessionToSurface.set(bare, surfaceId);
-        if (entry.workspaceId) workspaceToSurface.set(entry.workspaceId, surfaceId);
-      };
-      // Primary index: cmux's own active-surface map (restorable sessions live
-      // here without a surfaceId of their own). cmux does not always prune a
-      // session whose process has exited, so skip stale zombies — but keep a
-      // dead-pid entry that is `isRestorable` (hibernated/resumable), else we'd
-      // hide a session the user can still select and resume.
-      for (const [surfaceId, ref] of Object.entries(active)) {
-        const sid = ref?.sessionId;
-        if (!sid) continue;
-        const entry = sessions[sid] ?? {};
-        if (isStaleZombie(entry)) continue;
-        add(surfaceId, bareSession(sid), entry);
-      }
-      // A `--command`-launched agent lands only in `sessions` with its own
-      // surfaceId+pid and is absent from activeSessionsBySurface, so also take
-      // live (pid-alive) sessions map entries. pid-liveness drops stale ones.
-      for (const [sid, entry] of Object.entries(sessions)) {
-        if (entry.surfaceId && entry.pid && pidAlive(entry.pid)) {
-          add(entry.surfaceId, bareSession(entry.sessionId ?? sid), entry);
-        }
-      }
-      // Some restored/hook-captured sessions appear only in the workspace index.
-      // Resolve the surface from the sessions map, skipping stale zombies here too
-      // (restorable dead-pid entries are kept). (Ones with no surfaceId anywhere
-      // can't be placed without cmux topology; event routing still reaches them.)
-      for (const ref of Object.values(data.activeSessionsByWorkspace ?? {})) {
-        const sid = ref?.sessionId;
-        const entry = sid ? sessions[sid] : undefined;
-        if (!sid || !entry?.surfaceId) continue;
-        if (isStaleZombie(entry)) continue;
-        add(entry.surfaceId, bareSession(sid), entry);
-      }
+      foldHookSessions(agent, parsed as HookSessionsFile, {
+        surfaceMeta,
+        sessionToSurface,
+        workspaceToSurface,
+      });
     }
     this.surfaceMeta = surfaceMeta;
     this.sessionToSurface = sessionToSurface;

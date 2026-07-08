@@ -1,13 +1,6 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
 import { parseMenu, classifyMenu, isCodexApprovalScreen } from "../src/parse.js";
-
-let failed = 0;
-const t = (name: string, cond: boolean, detail?: unknown) => {
-  console.log(`${cond ? "✅" : "❌"} ${name}`);
-  if (!cond) {
-    failed++;
-    if (detail !== undefined) console.log("  got:", JSON.stringify(detail));
-  }
-};
 
 // Representative screens captured live from the real TUIs. The highlighted
 // option carries a per-agent selection marker: `❯` (claude), `›` (codex).
@@ -32,19 +25,19 @@ const codexApprove = [
 const codexTrust = ["› 1. Yes, continue", "  2. No, quit"].join("\n");
 
 const cp = parseMenu(claudePerm);
-t("claude: 3 options parsed", cp?.options.length === 3, cp?.options);
-t("claude: classified permission", cp ? classifyMenu(cp).kind === "permission" : false);
+test("claude: 3 options parsed", () => assert.ok(cp?.options.length === 3, cp?.options ? String(cp.options) : undefined));
+test("claude: classified permission", () => assert.ok(cp ? classifyMenu(cp).kind === "permission" : false));
 
 const ca = parseMenu(codexApprove);
-t("codex: highlighted (›) option not dropped → 3 options", ca?.options.length === 3, ca?.options);
-t("codex: option 1 is the Yes (not swallowed by the › marker)", ca?.options[0]?.digit === "1");
+test("codex: highlighted (›) option not dropped → 3 options", () => assert.ok(ca?.options.length === 3, ca?.options ? String(ca.options) : undefined));
+test("codex: option 1 is the Yes (not swallowed by the › marker)", () => assert.ok(ca?.options[0]?.digit === "1"));
 const cac = ca ? classifyMenu(ca) : null;
-t("codex: classified permission (not question)", cac?.kind === "permission", cac);
-t("codex: allow=1, allowAlways=2, deny=3",
-  cac?.allow?.digit === "1" && cac?.allowAlways?.digit === "2" && cac?.deny?.digit === "3", cac);
+test("codex: classified permission (not question)", () => assert.ok(cac?.kind === "permission", cac ? String(cac) : undefined));
+test("codex: allow=1, allowAlways=2, deny=3", () => assert.ok(
+  cac?.allow?.digit === "1" && cac?.allowAlways?.digit === "2" && cac?.deny?.digit === "3", cac ? String(cac) : undefined));
 
 const ct = parseMenu(codexTrust);
-t("codex trust: 2 options parsed", ct?.options.length === 2, ct?.options);
+test("codex trust: 2 options parsed", () => assert.ok(ct?.options.length === 2, ct?.options ? String(ct.options) : undefined));
 
 // A codex prompt echo reuses the `›` prefix and may be numbered. It must not be
 // taken as the menu when a real dialog is also on screen (take the last valid
@@ -60,16 +53,16 @@ const echoAboveMenu = [
   "  3. No, and tell Codex what to do differently (esc)",
 ].join("\n");
 const em = parseMenu(echoAboveMenu);
-t("echo above menu: picks the real 3-option dialog, not the echo",
-  em?.options.length === 3 && em?.options[0]?.label.startsWith("Yes, proceed"), em?.options);
+test("echo above menu: picks the real 3-option dialog, not the echo", () => assert.ok(
+  em?.options.length === 3 && em?.options[0]?.label.startsWith("Yes, proceed"), em?.options ? String(em.options) : undefined));
 
 // A lone numbered prompt echo (not a contiguous ≥2 run from 1) is not a menu.
 const echoOnly = ["› 1. do the thing I asked", "", "some other output line"].join("\n");
-t("lone numbered echo → not a menu", parseMenu(echoOnly) === null);
+test("lone numbered echo → not a menu", () => assert.ok(parseMenu(echoOnly) === null));
 
 // Scattered / non-sequential N. lines are not a menu.
 const scattered = ["1. alpha", "unrelated line", "unrelated line", "3. gamma"].join("\n");
-t("non-sequential scattered → not a menu", parseMenu(scattered) === null);
+test("non-sequential scattered → not a menu", () => assert.ok(parseMenu(scattered) === null));
 
 // isCodexApprovalScreen — the coarse codex-blocked trigger (codex approvals are
 // not hooks, so the screen is the only signal).
@@ -106,12 +99,12 @@ const codexFooterPlusProseList = [
   "  2. add a flag",
   "› _",
 ].join("\n");
-t("codex approval screen (exec) detected", isCodexApprovalScreen(codexExecScreen));
-t("codex approval screen (patch) detected", isCodexApprovalScreen(codexPatchScreen));
-t("codex working screen not detected", !isCodexApprovalScreen(codexWorking));
-t("codex prose 'would you like to run' (no footer) not detected", !isCodexApprovalScreen(codexProse));
-t("codex footer text in output (no menu) not detected", !isCodexApprovalScreen(codexFooterEcho));
-t("codex footer + unmarked prose list (no › row) not detected", !isCodexApprovalScreen(codexFooterPlusProseList));
+test("codex approval screen (exec) detected", () => assert.ok(isCodexApprovalScreen(codexExecScreen)));
+test("codex approval screen (patch) detected", () => assert.ok(isCodexApprovalScreen(codexPatchScreen)));
+test("codex working screen not detected", () => assert.ok(!isCodexApprovalScreen(codexWorking)));
+test("codex prose 'would you like to run' (no footer) not detected", () => assert.ok(!isCodexApprovalScreen(codexProse)));
+test("codex footer text in output (no menu) not detected", () => assert.ok(!isCodexApprovalScreen(codexFooterEcho)));
+test("codex footer + unmarked prose list (no › row) not detected", () => assert.ok(!isCodexApprovalScreen(codexFooterPlusProseList)));
 // Footer text far ABOVE a `› N.` prompt echo (codex reuses › for input) — not a
 // live dialog, since the footer isn't just below the marked row.
 const codexFooterFarFromMarkedEcho = [
@@ -120,7 +113,7 @@ const codexFooterFarFromMarkedEcho = [
   "› 1. my first idea",
   "  2. my second idea",
 ].join("\n");
-t("codex footer far from marked › row not detected", !isCodexApprovalScreen(codexFooterFarFromMarkedEcho));
+test("codex footer far from marked › row not detected", () => assert.ok(!isCodexApprovalScreen(codexFooterFarFromMarkedEcho)));
 // A stale `› N.` echo above the live dialog must not hide the real approval row.
 const codexStaleEchoAboveDialog = [
   "› 1. an earlier numbered prompt echo",
@@ -133,11 +126,5 @@ const codexStaleEchoAboveDialog = [
   "  3. No, and tell Codex what to do differently (esc)",
   "  Press enter to confirm or esc to cancel",
 ].join("\n");
-t("codex live dialog below a stale › echo IS detected", isCodexApprovalScreen(codexStaleEchoAboveDialog));
-t("claude permission not codex-detected", !isCodexApprovalScreen(claudePerm));
-
-if (failed) {
-  console.log(`\n${failed} failed`);
-  process.exit(1);
-}
-console.log("\nall passed");
+test("codex live dialog below a stale › echo IS detected", () => assert.ok(isCodexApprovalScreen(codexStaleEchoAboveDialog)));
+test("claude permission not codex-detected", () => assert.ok(!isCodexApprovalScreen(claudePerm)));

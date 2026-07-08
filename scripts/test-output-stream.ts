@@ -1,5 +1,6 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
 import { OutputStream } from "../src/output-stream.js";
-const t = (name: string, ok: boolean, extra = "") => console.log(`${ok ? "✅" : "❌"} ${name} ${extra}`);
 
 // text reconstructs seamlessly; an event interleaves in order
 const got: object[] = [];
@@ -9,10 +10,10 @@ os.event({ type: "tool_start", name: "Bash" });
 os.text("World");
 await os.drain();
 const text = got.filter((m) => (m as any).type === "text_delta").map((m) => (m as any).text).join("");
-t("text reconstructs", text === "HelloWorld", JSON.stringify(text));
+test("text reconstructs", () => assert.ok(text === "HelloWorld", JSON.stringify(text)));
 const evtIdx = got.findIndex((m) => (m as any).type === "tool_start");
 const beforeEvt = got.slice(0, evtIdx).map((m) => (m as any).text).join("");
-t("event ordered after first block", beforeEvt === "Hello", JSON.stringify(beforeEvt));
+test("event ordered after first block", () => assert.ok(beforeEvt === "Hello", JSON.stringify(beforeEvt)));
 
 // clear() drops everything pending
 const got2: object[] = [];
@@ -20,7 +21,7 @@ const os2 = new OutputStream((m) => got2.push(m), 5);
 os2.text("this is a long string that will not all flush at once");
 os2.clear();
 await new Promise((r) => setTimeout(r, 40));
-t("clear stops output", got2.length <= 2, `emitted ${got2.length} before clear`);
+test("clear stops output", () => assert.ok(got2.length <= 2, `emitted ${got2.length} before clear`));
 
 // emoji not split across frames (surrogate pairs stay intact per frame)
 const got3: string[] = [];
@@ -28,7 +29,7 @@ const os3 = new OutputStream((m) => got3.push((m as any).text), 5);
 os3.text("🎉🎊🥳🚀✨");
 await os3.drain();
 const joined = got3.join("");
-t("emoji intact", joined === "🎉🎊🥳🚀✨" && got3.every((s) => !s.includes("�")), JSON.stringify(joined));
+test("emoji intact", () => assert.ok(joined === "🎉🎊🥳🚀✨" && got3.every((s) => !s.includes("�")), JSON.stringify(joined)));
 
 // flush() preserves order and releases pending text immediately.
 const got4: object[] = [];
@@ -40,5 +41,5 @@ await new Promise((r) => setTimeout(r, 5));
 os4.flush();
 const got4Text = got4.filter((m) => (m as any).type === "text_delta").map((m) => (m as any).text).join("");
 const got4EventIdx = got4.findIndex((m) => (m as any).type === "tool_end");
-t("flush reconstructs text", got4Text === "abcdefghijkl", JSON.stringify(got4Text));
-t("flush keeps event order", got4EventIdx > 0 && got4EventIdx < got4.length - 1, JSON.stringify(got4));
+test("flush reconstructs text", () => assert.ok(got4Text === "abcdefghijkl", JSON.stringify(got4Text)));
+test("flush keeps event order", () => assert.ok(got4EventIdx > 0 && got4EventIdx < got4.length - 1, JSON.stringify(got4)));
