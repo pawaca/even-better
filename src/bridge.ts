@@ -35,9 +35,9 @@ const OUTPUT_WINDOW_LINES = 120;
 // Cadence at which the active Timeline is polled. The transcript tail (cheap
 // stat) and the screen scrape (a socket read of ≤120 lines) both tolerate this.
 const POLL_INTERVAL_MS = 300;
-// Once a session id is known but its transcript file isn't on disk yet, retry the
-// file lookup at most this often (piggybacked on the timeline poll) until it
-// appears — the bounded successor to the removed 2s session probe.
+// While on the screen fallback, re-fetch the pane's session id and retry the
+// transcript lookup at most this often (piggybacked on the timeline poll) — the
+// bounded successor to the removed dedicated 2s session probe.
 const TRANSCRIPT_RETRY_MS = 1000;
 // How long herdr must stay "idle" before we treat a turn as ended. herdr flips
 // to idle transiently between tool calls (prompt box flashes), so committing
@@ -166,9 +166,7 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
-  // A session id learned before its transcript file exists; retried on the poll
-  // until the file appears, then cleared (see TRANSCRIPT_RETRY_MS).
-  private pendingSessionId: string | null = null;
+  // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
@@ -223,11 +221,7 @@ export class PaneBridge {
   /** Pick the content source: the agent transcript when available (structured,
    *  lossless), else a ScreenTimeline fallback that scrapes the TUI. */
   private selectTimeline(): void {
-    if (this.agentSessionId) {
-      if (this.upgradeToTranscript(this.agentSessionId)) return;
-      // Known session, transcript file not written yet — the poll retries it.
-      this.pendingSessionId = this.agentSessionId;
-    }
+    if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId)) return;
     this.screen = new ScreenTimeline({
       read: () => this.readPane(),
       windowLines: OUTPUT_WINDOW_LINES,
@@ -299,20 +293,19 @@ export class PaneBridge {
    *  the screen fallback; a no-op once tailing. */
   noteSessionId(id: string): void {
     if (this.onTranscript || this.disposed) return;
-    if (!this.upgradeToTranscript(id)) this.pendingSessionId = id;
+    this.upgradeToTranscript(id);
   }
 
   private startPolling(): void {
     if (this.pollTimer || this.disposed) return;
     this.pollTimer = setInterval(() => {
       // Resolve the transcript off the screen fallback, throttled, on this
-      // existing timer (no dedicated probe). Two cases, both preempted by a
-      // status event that already carried the session:
-      //   - session known but its jsonl isn't written yet -> retry the lookup;
-      //   - session not delivered by the status event (older herdr that doesn't
-      //     push agent_session) -> fetch it via sessionId() so we don't wait on
-      //     an app /sessions poll.
-      // On success this same tick then polls the transcript.
+      // existing timer (no dedicated probe). Re-fetch the pane's CURRENT session
+      // each time and try the upgrade — one path that covers a lagging jsonl, a
+      // session that later changes, and older herdr that never pushed
+      // agent_session on the status event (so we don't wait on an app /sessions
+      // poll). A status event that carries the session upgrades sooner via
+      // noteSessionId; this is the fallback. On success a later tick polls it.
       if (
         !this.polling &&
         !this.onTranscript &&
@@ -320,16 +313,12 @@ export class PaneBridge {
         Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
       ) {
         this.lastUpgradeTryMs = Date.now();
-        if (this.pendingSessionId) {
-          if (this.upgradeToTranscript(this.pendingSessionId)) this.pendingSessionId = null;
-        } else {
-          void getMux()
-            .sessionId(this.paneId)
-            .then((id) => {
-              if (id && !this.onTranscript) this.noteSessionId(id);
-            })
-            .catch(() => {});
-        }
+        void getMux()
+          .sessionId(this.paneId)
+          .then((id) => {
+            if (id && !this.onTranscript) this.noteSessionId(id);
+          })
+          .catch(() => {});
       }
       const tl = this.timeline;
       if (this.polling || !tl) return;
