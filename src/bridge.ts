@@ -507,8 +507,8 @@ export class PaneBridge {
     if (next === "awaiting") {
       const canceledIdle = this.idleTimer !== null;
       this.cancelIdle();
+      this.idleCanceledForAwaiting = this.idleCanceledForAwaiting || canceledIdle;
       if (this.state !== "awaiting") {
-        this.idleCanceledForAwaiting = canceledIdle;
         this.state = "awaiting";
         void this.emitBlockedMenu();
       }
