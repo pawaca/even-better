@@ -243,10 +243,20 @@ export class PaneBridge {
     this.startPolling();
   }
 
-  /** Pick the content source: the agent transcript when available (structured,
-   *  lossless), else a ScreenTimeline fallback that scrapes the TUI. */
+  /** Pick the content source. The structured transcript is the only content
+   *  source for claude/codex: if it isn't ready yet we show nothing and let the
+   *  poll retry the upgrade until the jsonl exists, rather than mirroring the
+   *  unstable screen scrape (boot banners, MCP noise, diff heuristics) — that
+   *  fallback only degraded the pre-transcript window. Anything the agent wrote
+   *  before the upgrade is accepted as a small gap. Only an agent with no
+   *  transcript parser still falls back to the screen. */
   private selectTimeline(): void {
     if (this.agentSessionId && this.upgradeToTranscript(this.agentSessionId)) return;
+    this.onTranscript = false;
+    if (this.agent === "claude" || this.agent === "codex") {
+      this.timeline = null; // wait for the transcript; the poll keeps retrying
+      return;
+    }
     this.screen = new ScreenTimeline({
       read: () => this.readPane(),
       windowLines: OUTPUT_WINDOW_LINES,
@@ -259,7 +269,6 @@ export class PaneBridge {
         : undefined,
     });
     this.timeline = this.screen;
-    this.onTranscript = false;
   }
 
   private upgradeToTranscript(id: string): boolean {
@@ -774,7 +783,10 @@ export class PaneBridge {
     } else if (this.lastProseBlock) {
       // the transcript's final assistant text is the authoritative answer
       text = this.lastProseBlock;
-    } else {
+    } else if (this.screen) {
+      // Screen-based agents only: read the pane for a result. claude/codex take
+      // their result from the transcript above and never scrape the screen — so
+      // a pre-transcript turn ends empty rather than mirroring boot/TUI noise.
       try {
         const raw = await this.readPane();
         text = extractResult(raw.split("\n"));
