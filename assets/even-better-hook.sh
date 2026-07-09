@@ -14,7 +14,14 @@ set -eu
 agent="${1:-claude}"
 # capture the invoking (agent) pid before any subshell changes $PPID
 agent_pid="${PPID:-0}"
-payload="$(cat 2>/dev/null || true)"
+
+# Read the agent's hook payload (stdin) into a temp file — NOT an env var: a large
+# pasted prompt or tool input can exceed the ~128KiB env limit (E2BIG) and, under
+# `set -e`, abort before `exit 0` and disrupt the turn. Mirrors herdr's
+# HERDR_HOOK_INPUT_FILE.
+payload_file="$(mktemp "${TMPDIR:-/tmp}/eb-hook.XXXXXX" 2>/dev/null)" || exit 0
+trap 'rm -f "$payload_file"' EXIT HUP INT TERM
+cat > "$payload_file" 2>/dev/null || true
 
 sock="${EVEN_BETTER_HOOK_SOCKET:-$HOME/.even-better/hook.sock}"
 [ -S "$sock" ] || exit 0
@@ -39,12 +46,13 @@ fi
 # sendall goes to the kernel buffer without waiting for a reader; the 2s timeout is a
 # backstop). fds are redirected off the agent's pipe so it never waits on us for EOF.
 EB_AGENT="$agent" EB_MUX="$mux" EB_PANE="$pane_id" EB_SOCK="$sock" \
-EB_PID="$agent_pid" EB_PAYLOAD="$payload" \
+EB_PID="$agent_pid" EB_PAYLOAD_FILE="$payload_file" \
 python3 - <<'PY' >/dev/null 2>&1
 import json, os, socket, time
 
 try:
-    payload = json.loads(os.environ.get("EB_PAYLOAD") or "{}")
+    with open(os.environ.get("EB_PAYLOAD_FILE") or "/dev/null", encoding="utf-8") as f:
+        payload = json.load(f)
 except Exception:
     payload = {}
 if not isinstance(payload, dict):

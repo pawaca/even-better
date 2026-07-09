@@ -31,12 +31,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** True if a hooks block contains our command (identified by the script basename). */
-function blockIsOurs(block: unknown): boolean {
-  if (!isRecord(block) || !Array.isArray(block.hooks)) return false;
-  return (block.hooks as HookEntry[]).some(
-    (h) => typeof h?.command === "string" && h.command.includes(HOOK_MARKER),
+/** Remove our hook *entries* from one block. Returns the block with the remaining
+ *  hooks, or null if it held only ours (drop it). A coexisting third-party hook in
+ *  the same block is preserved — we never delete a whole block for other tools. */
+function stripOurEntries(block: unknown): unknown | null {
+  if (!isRecord(block) || !Array.isArray(block.hooks)) return block;
+  const entries = block.hooks as HookEntry[];
+  const kept = entries.filter(
+    (h) => !(typeof h?.command === "string" && h.command.includes(HOOK_MARKER)),
   );
+  if (kept.length === entries.length) return block; // nothing of ours here
+  if (kept.length === 0) return null; // block held only ours
+  return { ...block, hooks: kept };
 }
 
 /** The shell command an installed hook entry runs. `sh <script> <agent>`. */
@@ -54,7 +60,7 @@ export function addClaudeHooks(
   const hooks: Record<string, unknown> = isRecord(settings.hooks) ? { ...settings.hooks } : {};
   for (const ev of events) {
     const existing = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
-    const cleaned = existing.filter((b) => !blockIsOurs(b));
+    const cleaned = existing.map(stripOurEntries).filter((b) => b !== null);
     const block: HookBlock = { hooks: [{ type: "command", command, timeout: 5 }] };
     hooks[ev] = [...cleaned, block];
   }
@@ -71,7 +77,7 @@ export function removeClaudeHooks(settings: Record<string, unknown>): Record<str
       hooks[ev] = val;
       continue;
     }
-    const kept = val.filter((b) => !blockIsOurs(b));
+    const kept = val.map(stripOurEntries).filter((b) => b !== null);
     if (kept.length > 0) hooks[ev] = kept;
   }
   const next: Record<string, unknown> = { ...settings };

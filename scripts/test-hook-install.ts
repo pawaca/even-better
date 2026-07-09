@@ -67,3 +67,20 @@ test("removeClaudeHooks drops emptied events and the hooks key when nothing rema
   const removed = removeClaudeHooks(addClaudeHooks({}, CMD));
   assert.equal(removed.hooks, undefined);
 });
+
+test("removeClaudeHooks keeps a third-party hook coexisting in the same block", () => {
+  const shared = {
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            { type: "command", command: "third-party" },
+            { type: "command", command: CMD },
+          ],
+        },
+      ],
+    },
+  };
+  const removed = removeClaudeHooks(shared);
+  assert.deepEqual(cmds(removed, "PreToolUse"), ["third-party"]); // ours stripped, theirs kept
+});
