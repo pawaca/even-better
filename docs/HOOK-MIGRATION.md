@@ -84,8 +84,9 @@ the turn boundary directly.
 | Agent event | State / action |
 |---|---|
 | `SessionStart` | session id **+ `transcript_path`** → upgrade to transcript |
-| `UserPromptSubmit` | `busy` (turn start) |
+| `UserPromptSubmit` | **candidate** `busy` — a *blocked* prompt starts nothing (see note) |
 | `Stop` | **candidate** `idle` — debounced, not committed instantly (see note) |
+| `StopFailure` (Claude) | **close the turn** — turn ended on an **API error**; emit `result`/idle, stop stats |
 | `PermissionRequest` | **candidate** `awaiting` — confirm the menu surfaces (see note) |
 | `PreToolUse` where `tool_name ∈ {AskUserQuestion, ExitPlanMode}` | `awaiting` — these block on a menu with no dedicated event |
 | `PreToolUse` (any other tool) | stays `busy` — ordinary approved work, **no menu**; must **not** emit awaiting |
@@ -110,6 +111,18 @@ turn-end against **transcript quiescence** — final assistant message, no open 
 calls) is a tracked refinement; note the tension with the existing *"the final
 block lands during the grace, do not cancel on content"* invariant, which is why a
 naive content-based cancel is unsafe.
+
+`UserPromptSubmit` → `busy` is also *candidate*: a `UserPromptSubmit` hook (ours or
+a sibling) can `decision: "block"` and **erase the prompt** (Claude/Codex both
+support this), so the agent never starts and **no `Stop` follows** — a naive `busy`
+would strand the thinking / `running_stats` state. Confirm real activity began (the
+first transcript/tool event) before holding busy, or fall back to idle if nothing
+starts.
+
+`StopFailure` is a distinct **Claude** hook event (the turn ended on an **API
+error** — `rate_limit`, `overloaded`, `server_error`, …); `Stop` does **not** fire
+then. Phase 1 must install and map it to a turn close (error `result` + idle), or a
+pane that entered busy stays stuck after an API-error turn.
 
 Note the tool-name special case: only `PermissionRequest` and `PreToolUse` for
 `AskUserQuestion`/`ExitPlanMode` are interactive — **every other `PreToolUse` is
