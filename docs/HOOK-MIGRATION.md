@@ -197,10 +197,14 @@ newly-discovered pane must reconcile current state from durable sources**, not w
 for the next hook:
 
 - **session id / transcript** — from the mux's *persisted* discovery state, which
-  Phase 1 keeps: cmux `*-hook-sessions.json` carries `sessionId` + `transcriptPath`
-  (a second reason to keep cmux discovery, per the retirement note); herdr
-  `agent_session` is queryable from the socket at any time. An already-running pane
-  upgrades to its transcript immediately, without a fresh `SessionStart`.
+  Phase 1 keeps: cmux `*-hook-sessions.json` reliably gives the **`sessionId`**
+  (a second reason to keep cmux discovery); the transcript is then located via the
+  retained **`findSessionFile`/`findCodexSessionFile` scan**. Do **not** rely on the
+  file's `transcriptPath` — it is *not reliably present* (fork-session launches skip
+  the upsert until the first prompt; see `docs/SESSIONS.md §3`), which is why the
+  scan is retained. herdr's `agent_session` is queryable from the socket at any
+  time. So an already-running pane upgrades to its transcript immediately, without a
+  fresh `SessionStart`.
 - **open approval / `awaiting`** — from a **screen read** (`capture` + `parseMenu`)
   at discovery, so a pane already blocked on a menu stays answerable from the
   glasses (this is the same screen path retained above).
