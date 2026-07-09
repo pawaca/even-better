@@ -214,14 +214,28 @@ for the next hook:
   scan is retained. herdr's `agent_session` is queryable from the socket at any
   time. So an already-running pane upgrades to its transcript immediately, without a
   fresh `SessionStart`.
-- **open approval / `awaiting`** — from a **screen read** (`capture` + `parseMenu`)
-  at discovery, so a pane already blocked on a menu stays answerable from the
-  glasses (this is the same screen path retained above).
+- **open approval / `awaiting`** — from a **screen read** at discovery, but through
+  the **same agent-specific classifier the live path uses**, not raw `parseMenu`:
+  `parseMenu` intentionally accepts generic numbered runs, so an idle pane whose
+  output merely ends in a numbered list would become a bogus actionable
+  permission/question (and later inject keys). Require the stricter check —
+  `isCodexApprovalScreen` (footer/marked-row) for Codex, `classifyMenu` for Claude —
+  before flipping to `awaiting`.
 - **busy/idle** — inferred from transcript quiescence (or a one-time status read).
 
 Without this, a restart leaves every running session blank and any open approval
 unanswerable until the pane next acts — so the reconcile path is **required** before
 hooks become the sole live status/session source.
+
+**This reconcile also runs periodically, as the recovery for a dropped report.**
+Hooks are fire-and-forget and swallow failures (above), so a single `Stop` /
+`UserPromptSubmit` whose `POST` was lost while even-better was running is gone — and
+after cutover there is no mux busy/idle to catch it, so a bridge could stay busy or
+idle wrongly until a restart. A low-frequency backstop that re-derives busy/idle
+from **transcript activity** (the transcript is tailed anyway: new content ⇒ busy,
+sustained quiescence ⇒ idle) and honours the retained mux `closed` signal
+**self-heals** a dropped report without a durable hook-side spool. The seq-ordered
+hook reports remain the fast path; this is only the safety net.
 
 ## Per-pane cutover (hook-observed gate)
 
