@@ -57,9 +57,13 @@ export interface HookEffect {
  *   - a new-turn `UserPromptSubmit` (higher seq) after a `Stop` ⇒ opens the turn;
  *   - a `Stop` with no prior start ⇒ closes to idle anyway.
  * (The only cost is skipping a transient busy indicator when a whole turn's events
- * arrive Stop-first — the content still lands via the transcript. See the design's
- * "residual" note.) Session id/path are extracted from any report (idempotent
- * upgrade downstream), independent of ordering.
+ * arrive Stop-first — which needs the start report delayed past its own Stop, a
+ * turn-duration a local ms socket send does not produce, so it does not occur in
+ * practice. Even then the content still lands via the transcript, and Stage 3's
+ * periodic transcript-quiescence backstop re-derives busy from that content, so the
+ * busy/idle lifecycle is not lost. A short seq reorder buffer is the deferred
+ * escalation if it is ever observed. See the design's "residual" note.) Session
+ * id/path are extracted (seq-ordered) from any report, independent of status.
  */
 export class HookTurnTracker {
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
