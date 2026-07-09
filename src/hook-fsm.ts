@@ -93,11 +93,16 @@ export class HookTurnTracker {
       this.sessionSeq = report.seq;
     }
 
-    // A report belongs to the current session when its id matches (or it carries no
-    // id — env-less). Session metadata + status are surfaced only for the current
-    // session, so a delayed report from a prior session can't return a stale
-    // transcript or drive the new session's UI.
-    const currentSession = report.sessionId === undefined || report.sessionId === this.sessionId;
+    // A report belongs to the current session when its id matches; an id-less report
+    // (no session_id in the payload) can't be matched by identity, so gate it by the
+    // session boundary — it must not predate the current session's start (sessionSeq
+    // is -Inf until one is established, so id-less-only streams stay latest-wins).
+    // Metadata + status are surfaced only for the current session, so a delayed
+    // prior-session report can't return a stale transcript or drive the new UI.
+    const currentSession =
+      report.sessionId !== undefined
+        ? report.sessionId === this.sessionId
+        : report.seq >= this.sessionSeq;
     if (currentSession) {
       if (report.sessionId) effect.sessionId = report.sessionId;
       if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;

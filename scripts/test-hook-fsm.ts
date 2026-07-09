@@ -84,6 +84,19 @@ test("tracker: a stale old-session status is ignored after a newer SessionStart"
   assert.equal(e.status, undefined); // must not drive the new session's UI
 });
 
+test("tracker: an id-less stale status from before a session change is rejected", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 300, { sessionId: "new" }));
+  const e = t.apply(rep("Stop", 250)); // id-less, older than the new session's start
+  assert.equal(e.status, undefined);
+});
+
+test("tracker: an id-less status at/after the current session applies", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 300, { sessionId: "new" }));
+  assert.equal(t.apply(rep("UserPromptSubmit", 350)).status, "busy"); // id-less but current
+});
+
 test("tracker: subagent events never touch the main pane's session or status", () => {
   const t = new HookTurnTracker();
   t.apply(rep("UserPromptSubmit", 100, { sessionId: "main" })); // main session busy
