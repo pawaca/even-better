@@ -24,7 +24,7 @@ export const CLAUDE_EVENTS = [
   "SubagentStop",
 ];
 
-type HookEntry = { type?: string; command?: string; timeout?: number };
+type HookEntry = { type?: string; command?: string; timeout?: number; async?: boolean };
 type HookBlock = { matcher?: string; hooks?: HookEntry[] };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -61,7 +61,10 @@ export function addClaudeHooks(
   for (const ev of events) {
     const existing = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
     const cleaned = existing.map(stripOurEntries).filter((b) => b !== null);
-    const block: HookBlock = { hooks: [{ type: "command", command, timeout: 5 }] };
+    // async:true so Claude runs the reporter in the background and the turn never
+    // waits on the socket (default command-hook timeout is 600s / 30s for
+    // UserPromptSubmit). Reporting-only, so it never needs to return a decision.
+    const block: HookBlock = { hooks: [{ type: "command", command, timeout: 5, async: true }] };
     hooks[ev] = [...cleaned, block];
   }
   return { ...settings, hooks };
@@ -100,17 +103,29 @@ function bundledScriptPath(): string {
 }
 
 function claudeSettingsPath(): string {
-  return join(homedir(), ".claude", "settings.json");
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+  return join(dir, "settings.json");
 }
 
+/** Read existing settings. `{}` when the file is absent (fresh install). **Throws**
+ *  when it exists but is unreadable / not valid JSON / not an object — callers must
+ *  NOT then write, or they'd clobber the user's real settings (no-clobber). */
 function readJson(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  let text: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return {};
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new Error(`cannot read ${path}: ${(err as Error).message}`);
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${path} exists but is not valid JSON — refusing to overwrite it`);
+  }
+  if (!isRecord(parsed)) throw new Error(`${path} is not a JSON object — refusing to overwrite it`);
+  return parsed;
 }
 
 /** Copy the hook script to its stable install path, executable. Returns the path. */
@@ -124,10 +139,11 @@ export function stageHookScript(): string {
 
 /** Install the Claude hooks (idempotent). Returns the settings path written. */
 export function installClaudeHooks(): string {
-  const script = stageHookScript();
   const path = claudeSettingsPath();
+  const current = readJson(path); // throws on a malformed existing file — abort before any write
+  const script = stageHookScript();
   mkdirSync(dirname(path), { recursive: true });
-  const next = addClaudeHooks(readJson(path), hookCommand(script, "claude"));
+  const next = addClaudeHooks(current, hookCommand(script, "claude"));
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
   return path;
 }

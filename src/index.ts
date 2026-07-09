@@ -31,14 +31,24 @@ const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
 // CLI: install/uninstall the self-hook and exit, before touching the mux or server.
 // (Stage 1 of docs/HOOK-MIGRATION.md — reporting only; the bridge is not wired yet.)
 if (process.argv.includes("hook-install")) {
-  const p = installClaudeHooks();
-  console.log(`installed even-better Claude hooks → ${p}`);
-  console.log("restart already-running Claude panes to pick up the hook.");
+  try {
+    const p = installClaudeHooks();
+    console.log(`installed even-better Claude hooks → ${p}`);
+    console.log("restart already-running Claude panes to pick up the hook.");
+  } catch (err) {
+    console.error(`hook-install failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
   process.exit(0);
 }
 if (process.argv.includes("hook-uninstall")) {
-  const p = uninstallClaudeHooks();
-  console.log(p ? `removed even-better Claude hooks ← ${p}` : "no ~/.claude/settings.json to clean");
+  try {
+    const p = uninstallClaudeHooks();
+    console.log(p ? `removed even-better Claude hooks ← ${p}` : "no ~/.claude/settings.json to clean");
+  } catch (err) {
+    console.error(`hook-uninstall failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
   process.exit(0);
 }
 

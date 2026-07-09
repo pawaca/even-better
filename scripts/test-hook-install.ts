@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   addClaudeHooks,
   removeClaudeHooks,
+  installClaudeHooks,
   hookCommand,
   CLAUDE_EVENTS,
   HOOK_MARKER,
@@ -66,6 +70,31 @@ test("removeClaudeHooks strips only ours and round-trips to the original", () =>
 test("removeClaudeHooks drops emptied events and the hooks key when nothing remains", () => {
   const removed = removeClaudeHooks(addClaudeHooks({}, CMD));
   assert.equal(removed.hooks, undefined);
+});
+
+test("installed hook entries are async (non-blocking) with a short timeout", () => {
+  const after = addClaudeHooks({}, CMD);
+  const hooks = after.hooks as Record<string, unknown>;
+  const stop = hooks.Stop as Array<{ hooks: Array<{ command: string; async?: boolean; timeout?: number }> }>;
+  const entry = stop[0].hooks[0];
+  assert.equal(entry.async, true);
+  assert.equal(entry.timeout, 5);
+});
+
+test("installClaudeHooks refuses to overwrite a malformed settings file (no-clobber)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eb-claude-"));
+  const settings = join(dir, "settings.json");
+  const junk = "{ not valid json ]]";
+  writeFileSync(settings, junk);
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  try {
+    assert.throws(() => installClaudeHooks(), /not valid JSON/);
+    assert.equal(readFileSync(settings, "utf8"), junk); // left untouched
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
 });
 
 test("removeClaudeHooks keeps a third-party hook coexisting in the same block", () => {
