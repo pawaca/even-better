@@ -85,12 +85,20 @@ the turn boundary directly.
 |---|---|
 | `SessionStart` | session id **+ `transcript_path`** → upgrade to transcript |
 | `UserPromptSubmit` | `busy` (turn start) |
-| `Stop` | `idle` (turn boundary — **not** session end) |
+| `Stop` | **candidate** `idle` — debounced, not committed instantly (see note) |
 | `PermissionRequest` | `awaiting` (menu to answer) |
 | `PreToolUse` where `tool_name ∈ {AskUserQuestion, ExitPlanMode}` | `awaiting` — these block on a menu with no dedicated event |
 | `PreToolUse` (any other tool) | stays `busy` — ordinary approved work, **no menu**; must **not** emit awaiting |
 | `SubagentStart` / `SubagentStop` | **ignore** — never drive/revive the main pane (herdr's note) |
 | `Pre/PostCompact`, `PostToolUse` | not consumed (available if needed) |
+
+`Stop` is **not** authoritative idle: a sibling `Stop` hook can return
+`decision: "block"` to keep the agent going, and matching hooks run concurrently,
+so our fire-and-forget reporter may send `Stop` while the turn actually continues.
+Treat it as *candidate* idle and confirm through the existing **`IDLE_GRACE_MS`
+debounce** — a subsequent `busy`/tool event cancels the pending idle. This reuses
+the current turn-end invariant (bridge.ts) rather than committing `result` and
+stopping stats mid-turn.
 
 Note the tool-name special case: only `PermissionRequest` and `PreToolUse` for
 `AskUserQuestion`/`ExitPlanMode` are interactive — **every other `PreToolUse` is
@@ -124,8 +132,14 @@ the transcript-only invariant) show nothing on the glasses.
   back to `~/.codex/hooks.json` only when unset — mirror `codexHome()` in
   `src/codex-transcript.ts`, else a custom `CODEX_HOME` gets the hook in an unused
   file and never reports), behind a
-  **consent prompt**, idempotent, tagged with a marker (cmux uses a
-  `# cmux-…-hook-trust-<uuid>` fence) for clean **uninstall**.
+  **consent prompt**, idempotent, tagged with a marker for clean **uninstall**.
+- **Codex needs a trust step** — writing `hooks.json` is not enough: Codex **skips
+  non-managed command hooks until the user trusts the exact definition** (reviewed
+  via `/hooks`). cmux handles this by writing trust state into `config.toml`
+  (`[hooks.state]` + a `# cmux-…-hook-trust-<uuid>` fence). Phase 1 must do the same
+  (write the trusted-hook state) **or** walk the user through `/hooks`; otherwise a
+  consenting Codex user still gets no `SessionStart`/status and their panes never
+  upgrade.
 - **Coexists** with cmux/herdr's own hooks (both fire; we consume ours per the
   `providesAgentStatus` note below) and third-party hooks — additive, never
   clobber existing entries.
