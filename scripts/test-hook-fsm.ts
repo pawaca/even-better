@@ -76,6 +76,20 @@ test("tracker: stale (lower-seq) session metadata is ignored after a newer Sessi
   assert.equal(e.transcriptPath, undefined);
 });
 
+test("tracker: a stale old-session status is ignored after a newer SessionStart", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("UserPromptSubmit", 200, { sessionId: "old" })); // old session goes busy
+  t.apply(rep("SessionStart", 300, { sessionId: "new" })); // new session boundary
+  const e = t.apply(rep("PermissionRequest", 250, { sessionId: "old" })); // delayed old-session status
+  assert.equal(e.status, undefined); // must not drive the new session's UI
+});
+
+test("tracker: a current-session status past the boundary still applies", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 300, { sessionId: "new" }));
+  assert.equal(t.apply(rep("UserPromptSubmit", 350, { sessionId: "new" })).status, "busy");
+});
+
 test("tracker: newer session metadata (higher seq) wins", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 100, { sessionId: "old", transcriptPath: "/old.jsonl" }));

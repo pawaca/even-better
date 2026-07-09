@@ -83,7 +83,12 @@ export class HookTurnTracker {
     }
 
     const cls = classifyStatus(report);
-    if (cls !== null && report.seq > this.lastStatusSeq) {
+    // Gate status by the session boundary too: a delayed status from a prior session
+    // (seq below the latest session-bearing report) must not drive the new session's
+    // UI. The session block above already advanced lastSessionSeq to this report's
+    // seq when it is current, so an in-order report passes (seq >= itself) while a
+    // stale old-session one (seq < boundary) is dropped.
+    if (cls !== null && report.seq > this.lastStatusSeq && report.seq >= this.lastSessionSeq) {
       this.lastStatusSeq = report.seq;
       if (cls !== this.status) {
         this.status = cls;
