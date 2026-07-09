@@ -100,6 +100,17 @@ debounce** — a subsequent `busy`/tool event cancels the pending idle. This reu
 the current turn-end invariant (bridge.ts) rather than committing `result` and
 stopping stats mid-turn.
 
+**Residual (accepted, = today's behaviour):** a *fixed* grace can't cover a sibling
+`Stop` hook that runs **longer than the grace** and only then returns `block` — the
+grace elapses, `result` fires, and the busy that would cancel it arrives too late.
+The mux path has the same limitation (herdr reads idle during the hook wait), so
+this is **parity, not a regression**, and it self-heals when the resumed turn emits
+`busy`/content. A stronger guarantee (an **adaptive/longer grace**, or confirming
+turn-end against **transcript quiescence** — final assistant message, no open tool
+calls) is a tracked refinement; note the tension with the existing *"the final
+block lands during the grace, do not cancel on content"* invariant, which is why a
+naive content-based cancel is unsafe.
+
 Note the tool-name special case: only `PermissionRequest` and `PreToolUse` for
 `AskUserQuestion`/`ExitPlanMode` are interactive — **every other `PreToolUse` is
 busy work** (Read/Bash under skip-permissions have no menu). This mirrors the
