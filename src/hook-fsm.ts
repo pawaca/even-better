@@ -66,30 +66,40 @@ export interface HookEffect {
  * id/path are extracted (seq-ordered) from any report, independent of status.
  */
 export class HookTurnTracker {
+  private sessionId: string | undefined; // current session = the highest-seq report's session
+  private sessionSeq = Number.NEGATIVE_INFINITY;
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
-  private lastSessionSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
 
   apply(report: HookReport): HookEffect {
     const effect: HookEffect = {};
 
-    // Session metadata is seq-ordered too: on a pane that switched sessions, a
-    // delayed lower-seq report from the *old* session must not return its stale
-    // transcript over a newer SessionStart and attach the pane to the old jsonl.
-    if ((report.sessionId || report.transcriptPath) && report.seq > this.lastSessionSeq) {
-      this.lastSessionSeq = report.seq;
+    // Track the current session = the sessionId of the highest-seq session-bearing
+    // report. Advancing it only on an *actual* session-id change (not on every
+    // same-session report) is deliberate: it keeps out-of-order same-session delivery
+    // tolerated while still fencing off a prior session. A real change resets status.
+    if (report.sessionId && report.seq > this.sessionSeq) {
+      if (report.sessionId !== this.sessionId) {
+        this.status = null; // a new session starts fresh; the old status is stale
+        this.lastStatusSeq = Number.NEGATIVE_INFINITY;
+      }
+      this.sessionId = report.sessionId;
+      this.sessionSeq = report.seq;
+    }
+
+    // A report belongs to the current session when its id matches (or it carries no
+    // id — env-less). Session metadata + status are surfaced only for the current
+    // session, so a delayed report from a prior session can't return a stale
+    // transcript or drive the new session's UI.
+    const currentSession = report.sessionId === undefined || report.sessionId === this.sessionId;
+    if (currentSession) {
       if (report.sessionId) effect.sessionId = report.sessionId;
       if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;
     }
 
     const cls = classifyStatus(report);
-    // Gate status by the session boundary too: a delayed status from a prior session
-    // (seq below the latest session-bearing report) must not drive the new session's
-    // UI. The session block above already advanced lastSessionSeq to this report's
-    // seq when it is current, so an in-order report passes (seq >= itself) while a
-    // stale old-session one (seq < boundary) is dropped.
-    if (cls !== null && report.seq > this.lastStatusSeq && report.seq >= this.lastSessionSeq) {
-      this.lastStatusSeq = report.seq;
+    if (cls !== null && currentSession && report.seq > this.lastStatusSeq) {
+      this.lastStatusSeq = report.seq; // latest-wins within the session
       if (cls !== this.status) {
         this.status = cls;
         effect.status = cls;

@@ -84,6 +84,13 @@ test("tracker: a stale old-session status is ignored after a newer SessionStart"
   assert.equal(e.status, undefined); // must not drive the new session's UI
 });
 
+test("tracker: a same-session out-of-order status is still accepted (no false boundary)", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SubagentStop", 300, { sessionId: "s" })); // ignored non-status, delivered early
+  const e = t.apply(rep("UserPromptSubmit", 250, { sessionId: "s" })); // earlier same-session start, delayed
+  assert.equal(e.status, "busy"); // same session, just out of order — must still enter busy
+});
+
 test("tracker: a current-session status past the boundary still applies", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 300, { sessionId: "new" }));
