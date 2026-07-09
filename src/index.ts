@@ -22,9 +22,25 @@ import { extractModel } from "./parse.js";
 import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
+import { startHookEndpoint, hookSocketPath } from "./hook-endpoint.js";
+import { installClaudeHooks, uninstallClaudeHooks } from "./hook-install.js";
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
+
+// CLI: install/uninstall the self-hook and exit, before touching the mux or server.
+// (Stage 1 of docs/HOOK-MIGRATION.md — reporting only; the bridge is not wired yet.)
+if (process.argv.includes("hook-install")) {
+  const p = installClaudeHooks();
+  console.log(`installed even-better Claude hooks → ${p}`);
+  console.log("restart already-running Claude panes to pick up the hook.");
+  process.exit(0);
+}
+if (process.argv.includes("hook-uninstall")) {
+  const p = uninstallClaudeHooks();
+  console.log(p ? `removed even-better Claude hooks ← ${p}` : "no ~/.claude/settings.json to clean");
+  process.exit(0);
+}
 
 function parsePort(raw: string | undefined): number {
   const value = raw?.trim();
@@ -477,6 +493,18 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   } catch (err) {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
   }
+
+  // Stage 1: receive self-hook reports and log them (not yet wired to the bridge).
+  // Install with `pnpm start hook-install`; remove with `hook-uninstall`.
+  startHookEndpoint((r) => {
+    const extra = [
+      r.sessionId ? `session=${r.sessionId}` : "",
+      r.toolName ? `tool=${r.toolName}` : "",
+      r.transcriptPath ? "hasPath" : "",
+    ].filter(Boolean).join(" ");
+    console.log(`  [hook] ${r.mux}/${r.paneId} ${r.agent} ${r.event} seq=${r.seq}${extra ? " " + extra : ""}`);
+  });
+  console.log(`  Hooks    : ${hookSocketPath()} (self-hook reports; log-only)`);
 
   if (publicBase) {
     const url = appUrlFromBase(publicBase);
