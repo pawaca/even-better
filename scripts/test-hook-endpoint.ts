@@ -5,18 +5,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startHookEndpoint } from "../src/hook-endpoint.js";
 
-test("startHookEndpoint refuses to unlink a non-socket at the socket path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "eb-ep-"));
-  const p = join(dir, "not-a-socket");
-  writeFileSync(p, "important user data");
+function withSocketEnv<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const prev = process.env.EVEN_BETTER_HOOK_SOCKET;
-  process.env.EVEN_BETTER_HOOK_SOCKET = p;
-  try {
-    assert.throws(() => startHookEndpoint(() => {}), /non-socket/);
-    assert.ok(existsSync(p));
-    assert.equal(readFileSync(p, "utf8"), "important user data"); // left untouched
-  } finally {
+  process.env.EVEN_BETTER_HOOK_SOCKET = path;
+  return fn().finally(() => {
     if (prev === undefined) delete process.env.EVEN_BETTER_HOOK_SOCKET;
     else process.env.EVEN_BETTER_HOOK_SOCKET = prev;
-  }
+  });
+}
+
+test("startHookEndpoint refuses to unlink a non-socket at the socket path", async () => {
+  const p = join(mkdtempSync(join(tmpdir(), "eb-ep-")), "not-a-socket");
+  writeFileSync(p, "important user data");
+  await withSocketEnv(p, async () => {
+    await assert.rejects(startHookEndpoint(() => {}), /non-socket/);
+    assert.ok(existsSync(p));
+    assert.equal(readFileSync(p, "utf8"), "important user data"); // left untouched
+  });
+});
+
+test("startHookEndpoint refuses to hijack a socket a live instance owns", async () => {
+  const p = join(mkdtempSync(join(tmpdir(), "eb-ep-")), "h.sock");
+  await withSocketEnv(p, async () => {
+    const first = await startHookEndpoint(() => {}); // resolves once bound
+    try {
+      await assert.rejects(startHookEndpoint(() => {}), /already listening/);
+    } finally {
+      first.close();
+    }
+  });
 });

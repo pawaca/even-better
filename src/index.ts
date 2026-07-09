@@ -507,7 +507,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   // Stage 1: receive self-hook reports and log them (not yet wired to the bridge).
   // Install with `pnpm start hook-install`; remove with `hook-uninstall`.
   try {
-    startHookEndpoint((r) => {
+    await startHookEndpoint((r) => {
       const extra = [
         r.sessionId ? `session=${r.sessionId}` : "",
         r.toolName ? `tool=${r.toolName}` : "",

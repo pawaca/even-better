@@ -34,25 +34,26 @@ function runHook(env: Record<string, string>, payload: string): Promise<number> 
 test("hook script reports a parsed event to the endpoint with the env pane id", { skip: !runnable }, async () => {
   const sock = join(mkdtempSync(join(tmpdir(), "eb-hook-")), "h.sock");
   process.env.EVEN_BETTER_HOOK_SOCKET = sock;
-  const got = new Promise<HookReport>((resolve) => {
-    const server = startHookEndpoint((r) => {
-      server.close();
-      resolve(r);
-    });
+  let resolveReport: (r: HookReport) => void = () => {};
+  const got = new Promise<HookReport>((res) => {
+    resolveReport = res;
   });
-  // give the endpoint a beat to bind before the hook checks `[ -S sock ]`
-  await new Promise((r) => setTimeout(r, 200));
-  await runHook(
-    { EVEN_BETTER_HOOK_SOCKET: sock, CMUX_SURFACE_ID: "TESTPANE" },
-    JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "sess-1", tool_name: null }),
-  );
-  const r = await got;
-  assert.equal(r.paneId, "TESTPANE");
-  assert.equal(r.mux, "cmux");
-  assert.equal(r.agent, "claude");
-  assert.equal(r.event, "UserPromptSubmit");
-  assert.equal(r.sessionId, "sess-1");
-  assert.ok(r.seq > 0);
+  const server = await startHookEndpoint((r) => resolveReport(r)); // resolves once bound
+  try {
+    await runHook(
+      { EVEN_BETTER_HOOK_SOCKET: sock, CMUX_SURFACE_ID: "TESTPANE" },
+      JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: "sess-1", tool_name: null }),
+    );
+    const r = await got;
+    assert.equal(r.paneId, "TESTPANE");
+    assert.equal(r.mux, "cmux");
+    assert.equal(r.agent, "claude");
+    assert.equal(r.event, "UserPromptSubmit");
+    assert.equal(r.sessionId, "sess-1");
+    assert.ok(r.seq > 0);
+  } finally {
+    server.close();
+  }
 });
 
 test("hook exits fast (non-blocking) when the endpoint socket is absent", { skip: !runnable }, async () => {
