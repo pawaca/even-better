@@ -77,9 +77,18 @@ the turn boundary directly.
 | `SessionStart` | session id **+ `transcript_path`** → upgrade to transcript |
 | `UserPromptSubmit` | `busy` (turn start) |
 | `Stop` | `idle` (turn boundary — **not** session end) |
-| `PreToolUse` / `PermissionRequest` | `awaiting` (claude); **Codex exec/patch approvals stay screen** |
+| `PermissionRequest` | `awaiting` (menu to answer) |
+| `PreToolUse` where `tool_name ∈ {AskUserQuestion, ExitPlanMode}` | `awaiting` — these block on a menu with no dedicated event |
+| `PreToolUse` (any other tool) | stays `busy` — ordinary approved work, **no menu**; must **not** emit awaiting |
 | `SubagentStart` / `SubagentStop` | **ignore** — never drive/revive the main pane (herdr's note) |
 | `Pre/PostCompact`, `PostToolUse` | not consumed (available if needed) |
+
+Note the tool-name special case: only `PermissionRequest` and `PreToolUse` for
+`AskUserQuestion`/`ExitPlanMode` are interactive — **every other `PreToolUse` is
+busy work** (Read/Bash under skip-permissions have no menu). This mirrors the
+existing routing (`src/cmux.ts` `agent.hook.PreToolUse`, `docs/MULTIPLEXERS.md`);
+mapping all `PreToolUse` to awaiting would emit a bogus permission flow. Codex
+exec/patch approvals are not hooks at all and **stay screen**.
 
 Two pitfalls both references flag: **`Stop` ≠ session end** (don't clear the
 session on a turn boundary), and **subagent events must not drive the main pane.**
@@ -90,7 +99,10 @@ directly and can **retire the `findSessionFile` directory scan**.
 ## Install / uninstall
 
 - **Auto-install on first run**, merged into `~/.claude/settings.json` (standard
-  `hooks`, as agentcraft/confirmo do) and `~/.codex/hooks.json`, behind a
+  `hooks`, as agentcraft/confirmo do) and **`$CODEX_HOME/hooks.json`** (falling
+  back to `~/.codex/hooks.json` only when unset — mirror `codexHome()` in
+  `src/codex-transcript.ts`, else a custom `CODEX_HOME` gets the hook in an unused
+  file and never reports), behind a
   **consent prompt**, idempotent, tagged with a marker (cmux uses a
   `# cmux-…-hook-trust-<uuid>` fence) for clean **uninstall**.
 - **Coexists** with cmux/herdr's own hooks (both fire; we consume ours per the
@@ -137,11 +149,36 @@ from our hooks (mux status/session disabled) and behaviour matches or beats toda
 — busy/idle timing, transcript upgrade, awaiting — verified via `tools/app-sim.ts`
 recordings on each backend.
 
-## Then Phase 2
+## Then Phase 2 — new backends
 
-tmux backend = the three terminal primitives only: discover
-(`list-panes -F '#{pane_current_command} #{pane_pid}'`), send (`send-keys`), read
-(`capture-pane`). The semantic layer is already done and proven here.
+With the semantic layer proven, a backend is just three terminal primitives:
+**discover, send, read-screen**. For tmux:
+
+- **discover:** `list-panes -a -F '#{pane_id} #{pane_current_command} #{pane_pid}'`
+  — `#{pane_id}` (the `%NN` handle) is the **`paneId`** passed to send/read and the
+  `Multiplexer` key; `#{pane_pid}` is *only* the PID-fallback correlation input,
+  not a target.
+- **send:** `send-keys -t <pane_id> -l "…"` + `Enter`.
+- **read:** `capture-pane -p -t <pane_id>` (menus).
+
+### Which backends, and why (rough reach vs. adapter cost)
+
+Ordered by *new* users reachable × how cheap the adapter is. Popularity is
+approximate (GitHub stars = awareness, not active users; distribution/default
+status matters more for the top rows).
+
+| Backend | Control surface | Reach (rough) | Priority |
+|---|---|---|---|
+| **tmux** | `list-panes`/`send-keys`/`capture-pane` (id-addressable) | millions (distro default, SSH) — also covers tmux-based agent tools like Claude Squad | **1st** |
+| **iTerm2** | Python API (session id / send / contents) | ~millions of Mac devs (biggest "bare terminal, no mux" group) | 2nd — high reach, heavier API |
+| **kitty** | `kitty @ ls`/`send-text`/`get-text` (JSON, id/match) | ~hundreds of thousands | 3rd — cleanest adapter |
+| **WezTerm** | `wezterm cli list`/`send-text`/`get-text` (id) | ~hundreds of thousands | 3rd — cleanest adapter |
+| **Zellij** | `zellij action write-chars`/`dump-screen` (**focus-based, not id-addressable**) | ~hundreds of thousands (growing) | later — extra friction |
+
+Deliberately **not** targeted: GNU Screen (legacy/declining, crude `stuff`/
+`hardcopy`), Ghostty/Alacritty (no built-in multiplexer — run tmux inside),
+Warp and Electron agent apps (proprietary / no usable external control — same wall
+as the Codex desktop app).
 
 ---
 
