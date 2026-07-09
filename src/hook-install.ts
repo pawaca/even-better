@@ -24,11 +24,27 @@ export const CLAUDE_EVENTS = [
   "SubagentStop",
 ];
 
-type HookEntry = { type?: string; command?: string; timeout?: number; async?: boolean };
+export type HookEntry = {
+  type?: string;
+  command?: string;
+  args?: string[];
+  timeout?: number;
+  async?: boolean;
+};
 type HookBlock = { matcher?: string; hooks?: HookEntry[] };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** True if a hook entry is ours — identified by the script basename in its args
+ *  (exec form) or command string (legacy shell form). */
+function entryIsOurs(h: unknown): boolean {
+  if (!isRecord(h)) return false;
+  const inArgs =
+    Array.isArray(h.args) && h.args.some((a) => typeof a === "string" && a.includes(HOOK_MARKER));
+  const inCmd = typeof h.command === "string" && h.command.includes(HOOK_MARKER);
+  return inArgs || inCmd;
 }
 
 /** Remove our hook *entries* from one block. Returns the block with the remaining
@@ -37,34 +53,32 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function stripOurEntries(block: unknown): unknown | null {
   if (!isRecord(block) || !Array.isArray(block.hooks)) return block;
   const entries = block.hooks as HookEntry[];
-  const kept = entries.filter(
-    (h) => !(typeof h?.command === "string" && h.command.includes(HOOK_MARKER)),
-  );
+  const kept = entries.filter((h) => !entryIsOurs(h));
   if (kept.length === entries.length) return block; // nothing of ours here
   if (kept.length === 0) return null; // block held only ours
   return { ...block, hooks: kept };
 }
 
-/** The shell command an installed hook entry runs. `sh <script> <agent>`. */
-export function hookCommand(scriptPath: string, agent: "claude" | "codex"): string {
-  return `sh ${JSON.stringify(scriptPath)} ${agent}`;
+/** The installed hook handler, in **exec form** (`command: "sh"` + `args`): Claude
+ *  runs command-only hooks through `sh -c`, where a script path containing shell
+ *  metacharacters ($(), backticks — e.g. from a nonstandard $HOME) would expand;
+ *  exec form passes the path literally. async so the turn never waits on the socket. */
+export function hookHandler(scriptPath: string, agent: "claude" | "codex"): HookEntry {
+  return { type: "command", command: "sh", args: [scriptPath, agent], timeout: 5, async: true };
 }
 
 /** Add our command to each event, idempotently (drops any prior even-better block
  *  first) and without touching other tools' hooks. Pure. */
 export function addClaudeHooks(
   settings: Record<string, unknown>,
-  command: string,
+  handler: HookEntry,
   events: readonly string[] = CLAUDE_EVENTS,
 ): Record<string, unknown> {
   const hooks: Record<string, unknown> = isRecord(settings.hooks) ? { ...settings.hooks } : {};
   for (const ev of events) {
     const existing = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
     const cleaned = existing.map(stripOurEntries).filter((b) => b !== null);
-    // async:true so Claude runs the reporter in the background and the turn never
-    // waits on the socket (default command-hook timeout is 600s / 30s for
-    // UserPromptSubmit). Reporting-only, so it never needs to return a decision.
-    const block: HookBlock = { hooks: [{ type: "command", command, timeout: 5, async: true }] };
+    const block: HookBlock = { hooks: [handler] };
     hooks[ev] = [...cleaned, block];
   }
   return { ...settings, hooks };
@@ -143,7 +157,7 @@ export function installClaudeHooks(): string {
   const current = readJson(path); // throws on a malformed existing file — abort before any write
   const script = stageHookScript();
   mkdirSync(dirname(path), { recursive: true });
-  const next = addClaudeHooks(current, hookCommand(script, "claude"));
+  const next = addClaudeHooks(current, hookHandler(script, "claude"));
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
   return path;
 }

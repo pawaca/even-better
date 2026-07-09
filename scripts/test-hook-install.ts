@@ -7,15 +7,16 @@ import {
   addClaudeHooks,
   removeClaudeHooks,
   installClaudeHooks,
-  hookCommand,
+  hookHandler,
   CLAUDE_EVENTS,
   HOOK_MARKER,
 } from "../src/hook-install.js";
 
-const CMD = hookCommand("/home/u/.even-better/even-better-hook.sh", "claude");
+const HANDLER = hookHandler("/home/u/.even-better/even-better-hook.sh", "claude");
 
-// Extract the command strings installed for one event, via unknown-narrowing.
-function cmds(settings: Record<string, unknown>, event: string): string[] {
+// Per-event entry signatures: "command arg0 arg1…", so ours contains HOOK_MARKER
+// and a third-party "other-tool" is its own signature.
+function sigs(settings: Record<string, unknown>, event: string): string[] {
   const hooks = settings.hooks;
   if (typeof hooks !== "object" || hooks === null) return [];
   const arr = (hooks as Record<string, unknown>)[event];
@@ -26,59 +27,74 @@ function cmds(settings: Record<string, unknown>, event: string): string[] {
     const inner = (block as { hooks?: unknown }).hooks;
     if (!Array.isArray(inner)) continue;
     for (const h of inner) {
-      if (typeof h === "object" && h !== null && typeof (h as { command?: unknown }).command === "string") {
-        out.push((h as { command: string }).command);
-      }
+      if (typeof h !== "object" || h === null) continue;
+      const e = h as { command?: unknown; args?: unknown };
+      const cmd = typeof e.command === "string" ? e.command : "";
+      const args = Array.isArray(e.args) ? e.args.filter((a) => typeof a === "string").join(" ") : "";
+      out.push(`${cmd} ${args}`.trim());
     }
   }
   return out;
 }
 
-test("hookCommand references the script (the uninstall marker)", () => {
-  assert.ok(CMD.includes(HOOK_MARKER));
-  assert.ok(CMD.endsWith(" claude"));
+const ours = (ss: string[]): string[] => ss.filter((s) => s.includes(HOOK_MARKER));
+
+test("hookHandler installs in exec form (command sh + args), async, marker in args", () => {
+  assert.equal(HANDLER.command, "sh");
+  assert.deepEqual(HANDLER.args, ["/home/u/.even-better/even-better-hook.sh", "claude"]);
+  assert.equal(HANDLER.async, true);
+  assert.equal(HANDLER.timeout, 5);
+  assert.ok((HANDLER.args ?? []).some((a) => a.includes(HOOK_MARKER)));
 });
 
-test("addClaudeHooks adds our command to every event without clobbering existing ones", () => {
+test("addClaudeHooks adds our handler to every event without clobbering existing ones", () => {
   const before = {
     hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "other-tool" }] }] },
     permissions: { allow: [] },
   };
-  const after = addClaudeHooks(before, CMD);
-  // existing PreToolUse hook preserved, ours appended
-  assert.deepEqual(cmds(after, "PreToolUse").sort(), ["other-tool", CMD].sort());
-  // installed for every event
-  for (const ev of CLAUDE_EVENTS) assert.ok(cmds(after, ev).includes(CMD), `missing on ${ev}`);
-  // unrelated keys untouched
-  assert.deepEqual(after.permissions, { allow: [] });
+  const after = addClaudeHooks(before, HANDLER);
+  const pre = sigs(after, "PreToolUse");
+  assert.ok(pre.includes("other-tool")); // existing preserved
+  assert.equal(ours(pre).length, 1); // ours appended
+  for (const ev of CLAUDE_EVENTS) assert.equal(ours(sigs(after, ev)).length, 1, `missing on ${ev}`);
+  assert.deepEqual(after.permissions, { allow: [] }); // unrelated keys untouched
 });
 
-test("addClaudeHooks is idempotent — re-install never duplicates our block", () => {
-  const twice = addClaudeHooks(addClaudeHooks({}, CMD), CMD);
-  for (const ev of CLAUDE_EVENTS) {
-    const ours = cmds(twice, ev).filter((c) => c.includes(HOOK_MARKER));
-    assert.equal(ours.length, 1, `duplicate on ${ev}`);
-  }
+test("addClaudeHooks is idempotent — re-install never duplicates our handler", () => {
+  const twice = addClaudeHooks(addClaudeHooks({}, HANDLER), HANDLER);
+  for (const ev of CLAUDE_EVENTS) assert.equal(ours(sigs(twice, ev)).length, 1, `duplicate on ${ev}`);
 });
 
 test("removeClaudeHooks strips only ours and round-trips to the original", () => {
   const original = { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "other-tool" }] }] } };
-  const installed = addClaudeHooks(original, CMD);
-  assert.deepEqual(removeClaudeHooks(installed), original);
+  assert.deepEqual(removeClaudeHooks(addClaudeHooks(original, HANDLER)), original);
 });
 
 test("removeClaudeHooks drops emptied events and the hooks key when nothing remains", () => {
-  const removed = removeClaudeHooks(addClaudeHooks({}, CMD));
-  assert.equal(removed.hooks, undefined);
+  assert.equal(removeClaudeHooks(addClaudeHooks({}, HANDLER)).hooks, undefined);
 });
 
-test("installed hook entries are async (non-blocking) with a short timeout", () => {
-  const after = addClaudeHooks({}, CMD);
-  const hooks = after.hooks as Record<string, unknown>;
-  const stop = hooks.Stop as Array<{ hooks: Array<{ command: string; async?: boolean; timeout?: number }> }>;
-  const entry = stop[0].hooks[0];
-  assert.equal(entry.async, true);
-  assert.equal(entry.timeout, 5);
+test("removeClaudeHooks keeps a third-party hook coexisting in the same block", () => {
+  const shared = {
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            { type: "command", command: "third-party" },
+            HANDLER,
+          ],
+        },
+      ],
+    },
+  };
+  assert.deepEqual(sigs(removeClaudeHooks(shared), "PreToolUse"), ["third-party"]);
+});
+
+test("removeClaudeHooks also strips a legacy shell-form entry (marker in command)", () => {
+  const legacy = {
+    hooks: { Stop: [{ hooks: [{ type: "command", command: `sh "/x/${HOOK_MARKER}" claude` }] }] },
+  };
+  assert.equal(removeClaudeHooks(legacy).hooks, undefined);
 });
 
 test("installClaudeHooks refuses to overwrite a malformed settings file (no-clobber)", () => {
@@ -95,21 +111,4 @@ test("installClaudeHooks refuses to overwrite a malformed settings file (no-clob
     if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prev;
   }
-});
-
-test("removeClaudeHooks keeps a third-party hook coexisting in the same block", () => {
-  const shared = {
-    hooks: {
-      PreToolUse: [
-        {
-          hooks: [
-            { type: "command", command: "third-party" },
-            { type: "command", command: CMD },
-          ],
-        },
-      ],
-    },
-  };
-  const removed = removeClaudeHooks(shared);
-  assert.deepEqual(cmds(removed, "PreToolUse"), ["third-party"]); // ours stripped, theirs kept
 });
