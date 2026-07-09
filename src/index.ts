@@ -22,9 +22,35 @@ import { extractModel } from "./parse.js";
 import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
+import { startHookEndpoint, hookSocketPath } from "./hook-endpoint.js";
+import { installClaudeHooks, uninstallClaudeHooks } from "./hook-install.js";
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
+
+// CLI: install/uninstall the self-hook and exit, before touching the mux or server.
+// (Stage 1 of docs/HOOK-MIGRATION.md — reporting only; the bridge is not wired yet.)
+if (process.argv.includes("hook-install")) {
+  try {
+    const p = installClaudeHooks();
+    console.log(`installed even-better Claude hooks → ${p}`);
+    console.log("restart already-running Claude panes to pick up the hook.");
+  } catch (err) {
+    console.error(`hook-install failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+if (process.argv.includes("hook-uninstall")) {
+  try {
+    const p = uninstallClaudeHooks();
+    console.log(p ? `removed even-better Claude hooks ← ${p}` : "no ~/.claude/settings.json to clean");
+  } catch (err) {
+    console.error(`hook-uninstall failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 function parsePort(raw: string | undefined): number {
   const value = raw?.trim();
@@ -476,6 +502,23 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
     }
   } catch (err) {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
+  }
+
+  // Stage 1: receive self-hook reports and log them (not yet wired to the bridge).
+  // Install with `pnpm start hook-install`; remove with `hook-uninstall`.
+  try {
+    await startHookEndpoint((r) => {
+      const extra = [
+        r.sessionId ? `session=${r.sessionId}` : "",
+        r.toolName ? `tool=${r.toolName}` : "",
+        r.transcriptPath ? "hasPath" : "",
+      ].filter(Boolean).join(" ");
+      const pane = r.paneId || `pid:${r.pid ?? "?"}`;
+      console.log(`  [hook] ${r.mux}/${pane} ${r.agent} ${r.event} seq=${r.seq}${extra ? " " + extra : ""}`);
+    });
+    console.log(`  Hooks    : ${hookSocketPath()} (self-hook reports; log-only)`);
+  } catch (err) {
+    console.error(`  Hooks    : disabled — ${(err as Error).message}`);
   }
 
   if (publicBase) {
