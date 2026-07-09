@@ -506,15 +506,20 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
 
   // Stage 1: receive self-hook reports and log them (not yet wired to the bridge).
   // Install with `pnpm start hook-install`; remove with `hook-uninstall`.
-  startHookEndpoint((r) => {
-    const extra = [
-      r.sessionId ? `session=${r.sessionId}` : "",
-      r.toolName ? `tool=${r.toolName}` : "",
-      r.transcriptPath ? "hasPath" : "",
-    ].filter(Boolean).join(" ");
-    console.log(`  [hook] ${r.mux}/${r.paneId} ${r.agent} ${r.event} seq=${r.seq}${extra ? " " + extra : ""}`);
-  });
-  console.log(`  Hooks    : ${hookSocketPath()} (self-hook reports; log-only)`);
+  try {
+    startHookEndpoint((r) => {
+      const extra = [
+        r.sessionId ? `session=${r.sessionId}` : "",
+        r.toolName ? `tool=${r.toolName}` : "",
+        r.transcriptPath ? "hasPath" : "",
+      ].filter(Boolean).join(" ");
+      const pane = r.paneId || `pid:${r.pid ?? "?"}`;
+      console.log(`  [hook] ${r.mux}/${pane} ${r.agent} ${r.event} seq=${r.seq}${extra ? " " + extra : ""}`);
+    });
+    console.log(`  Hooks    : ${hookSocketPath()} (self-hook reports; log-only)`);
+  } catch (err) {
+    console.error(`  Hooks    : disabled — ${(err as Error).message}`);
+  }
 
   if (publicBase) {
     const url = appUrlFromBase(publicBase);

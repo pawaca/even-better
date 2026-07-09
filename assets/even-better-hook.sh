@@ -27,9 +27,10 @@ sock="${EVEN_BETTER_HOOK_SOCKET:-$HOME/.even-better/hook.sock}"
 [ -S "$sock" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-# env-primary pane id (prefer cmux's documented CMUX_SURFACE_ID); Phase 2 adds tmux
+# env-primary pane id (prefer cmux's documented CMUX_SURFACE_ID); Phase 2 adds tmux.
+# May be empty on a resumed/subprocess hook — we still send (with the pid) and let
+# the endpoint resolve by unique pid (resolvePaneId), rather than dropping the event.
 pane_id="${CMUX_SURFACE_ID:-${CMUX_PANEL_ID:-${HERDR_PANE_ID:-${TMUX_PANE:-}}}}"
-[ -n "$pane_id" ] || exit 0
 
 mux="unknown"
 if [ -n "${CMUX_SURFACE_ID:-}" ] || [ -n "${CMUX_PANEL_ID:-}" ]; then

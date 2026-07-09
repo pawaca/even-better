@@ -3,7 +3,7 @@
 // SSE port. See docs/HOOK-MIGRATION.md "Transport".
 
 import { createServer, type Server } from "node:net";
-import { existsSync, mkdirSync, unlinkSync, chmodSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, unlinkSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseHookReport, type HookReport } from "./hook-report.js";
@@ -22,6 +22,13 @@ export function startHookEndpoint(onReport: (r: HookReport) => void): Server {
   const path = hookSocketPath();
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) {
+    // Only ever unlink a stale *socket* — never a regular file (a misconfigured
+    // EVEN_BETTER_HOOK_SOCKET pointing at real data must not be silently deleted).
+    if (!lstatSync(path).isSocket()) {
+      throw new Error(
+        `refusing to unlink non-socket at ${path} — set EVEN_BETTER_HOOK_SOCKET to a socket path`,
+      );
+    }
     try {
       unlinkSync(path); // clear a stale socket from a prior run
     } catch {

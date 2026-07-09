@@ -29,7 +29,7 @@ test("parseHookReport parses a valid report", () => {
 test("parseHookReport rejects malformed lines and missing essentials", () => {
   assert.equal(parseHookReport("not json"), null);
   assert.equal(parseHookReport("[]"), null);
-  assert.equal(parseHookReport(JSON.stringify({ agent: "claude", event: "Stop" })), null); // no paneId
+  // note: a missing paneId is NOT rejected — it's valid for the env-less/pid path.
   assert.equal(parseHookReport(JSON.stringify({ paneId: "S1", event: "Stop" })), null); // no agent
   assert.equal(parseHookReport(JSON.stringify({ agent: "x", paneId: "S1", event: "Stop" })), null); // bad agent
   assert.equal(parseHookReport(JSON.stringify({ agent: "claude", paneId: "S1" })), null); // no event
@@ -46,14 +46,22 @@ test("parseHookReport defaults mux/seq and drops empty/null optionals", () => {
   assert.equal(r.transcriptPath, undefined);
 });
 
+test("parseHookReport accepts an env-less report (empty paneId) carrying a pid", () => {
+  const r = parseHookReport(JSON.stringify({ agent: "claude", event: "SessionStart", paneId: "", pid: 77, seq: 5 }));
+  assert.ok(r);
+  assert.equal(r.paneId, "");
+  assert.equal(r.pid, 77);
+});
+
 test("resolvePaneId prefers a known env paneId over pid", () => {
   const panes = [{ paneId: "S1", pid: 1 }, { paneId: "S2", pid: 9 }];
   assert.equal(resolvePaneId({ paneId: "S1", pid: 9 }, panes), "S1");
 });
 
-test("resolvePaneId falls back to a unique pid when the env id is unknown", () => {
+test("resolvePaneId falls back to a unique pid when the env id is unknown or empty", () => {
   const panes = [{ paneId: "S1", pid: 1 }, { paneId: "S2", pid: 9 }];
   assert.equal(resolvePaneId({ paneId: "STALE", pid: 9 }, panes), "S2");
+  assert.equal(resolvePaneId({ paneId: "", pid: 9 }, panes), "S2"); // env-less report
 });
 
 test("resolvePaneId returns null when ambiguous or unmatched (never the focused pane)", () => {

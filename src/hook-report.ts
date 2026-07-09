@@ -46,7 +46,9 @@ export function parseHookReport(line: string): HookReport | null {
   const agent = r.agent === "codex" ? "codex" : r.agent === "claude" ? "claude" : null;
   const paneId = typeof r.paneId === "string" ? r.paneId : "";
   const event = typeof r.event === "string" ? r.event : "";
-  if (!agent || !paneId || !event) return null;
+  // paneId may be empty on an env-less (resumed/subprocess) hook — the pid fallback
+  // in resolvePaneId recovers it, so only agent + event are structurally required.
+  if (!agent || !event) return null;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
   const num = (v: unknown): number | undefined =>
