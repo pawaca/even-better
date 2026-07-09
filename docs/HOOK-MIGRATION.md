@@ -86,7 +86,7 @@ the turn boundary directly.
 | `SessionStart` | session id **+ `transcript_path`** → upgrade to transcript |
 | `UserPromptSubmit` | `busy` (turn start) |
 | `Stop` | **candidate** `idle` — debounced, not committed instantly (see note) |
-| `PermissionRequest` | `awaiting` (menu to answer) |
+| `PermissionRequest` | **candidate** `awaiting` — confirm the menu surfaces (see note) |
 | `PreToolUse` where `tool_name ∈ {AskUserQuestion, ExitPlanMode}` | `awaiting` — these block on a menu with no dedicated event |
 | `PreToolUse` (any other tool) | stays `busy` — ordinary approved work, **no menu**; must **not** emit awaiting |
 | `SubagentStart` / `SubagentStop` | **ignore** — never drive/revive the main pane (herdr's note) |
@@ -106,13 +106,18 @@ busy work** (Read/Bash under skip-permissions have no menu). This mirrors the
 existing routing (`src/cmux.ts` `agent.hook.PreToolUse`, `docs/MULTIPLEXERS.md`);
 mapping all `PreToolUse` to awaiting would emit a bogus permission flow.
 
-**Codex `PermissionRequest` is authoritative when present.** Contrary to the old
-cmux screen-only limitation, Codex *does* fire a `PermissionRequest` hook when it
-is about to ask for approval — including shell escalation, with `Bash`/`apply_patch`
-matchers. Phase 1 should treat that hook as the structured `awaiting` signal
-(better than parsing the menu) and **demote screen parsing to a fallback** for
-approval *contexts the hook doesn't cover*, rather than preserving screen-only as
-if it were native behaviour.
+**Codex `PermissionRequest` is a strong signal, but a _candidate_ — confirm the
+prompt actually surfaces.** Contrary to the old cmux screen-only limitation, Codex
+*does* fire a `PermissionRequest` hook when about to ask for approval (shell
+escalation, `Bash`/`apply_patch` matchers) — so Phase 1 should use it instead of
+guessing from the menu. But **all matching hooks run**, and a sibling approval hook
+returning `allow` (proceed, no prompt) or `deny` (block) resolves it with **no menu
+to answer** — only the no-decision case opens one. Since the plan also promises
+coexistence with third-party hooks, treat `PermissionRequest` as *candidate*
+`awaiting` and confirm the menu actually appears (screen) / that no other hook
+decided **before** emitting an actionable permission state — same candidate-then-
+confirm shape as `Stop`. Screen parsing is thus a **confirmation**, not merely a
+fallback.
 
 Two pitfalls both references flag: **`Stop` ≠ session end** (don't clear the
 session on a turn boundary), and **subagent events must not drive the main pane.**
