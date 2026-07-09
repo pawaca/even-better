@@ -68,6 +68,7 @@ export interface HookEffect {
 export class HookTurnTracker {
   private sessionId: string | undefined; // current session id
   private sessionStartSeq = Number.NEGATIVE_INFINITY; // seq the current session began (advances only on a session change)
+  private confirmedSessionSeq = Number.NEGATIVE_INFINITY; // seq of the latest accepted SessionStart
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
 
@@ -80,24 +81,25 @@ export class HookTurnTracker {
     // reset the main turn. Drop them before any session/status tracking.
     if (report.event === "SubagentStart" || report.event === "SubagentStop") return effect;
 
-    // Establish the first session from any report; but once a session is known, only
-    // switch to a *different* id on an actual `SessionStart`. A delayed old-session
-    // async hook can run *after* the new session began, so its `time.time_ns()` seq is
-    // higher than the new SessionStart's — switching on any higher-seq report would
-    // flip the tracker back to the old session. Gating switches to SessionStart avoids
-    // that (a dropped SessionStart is recovered by Stage 3's reconciliation). We never
-    // advance the boundary on same-session reports (that would fence out a later same-
-    // session id-less status). A real change resets status.
-    if (
-      report.sessionId &&
-      report.sessionId !== this.sessionId &&
-      report.seq > this.sessionStartSeq &&
-      (this.sessionId === undefined || report.event === "SessionStart")
-    ) {
-      this.sessionId = report.sessionId;
-      this.sessionStartSeq = report.seq;
-      this.status = null; // a new session starts fresh; the old status is stale
-      this.lastStatusSeq = Number.NEGATIVE_INFINITY;
+    // Establish the first session from any report; thereafter a real `SessionStart` is
+    // authoritative — it switches/replaces the session (even a status-established one,
+    // or a higher-seq stale one from a delayed old async hook) unless a *newer*
+    // SessionStart already won (confirmedSessionSeq). A non-SessionStart report never
+    // switches. This both recovers from an initial stale higher-seq old-session report
+    // and stops a delayed old async hook from flipping back. We never advance the
+    // boundary on same-session reports (that would fence out a later same-session
+    // id-less status). A real change resets status.
+    if (report.sessionId && report.sessionId !== this.sessionId) {
+      const firstEstablish = this.sessionId === undefined;
+      const sessionStartWins =
+        report.event === "SessionStart" && report.seq > this.confirmedSessionSeq;
+      if (firstEstablish || sessionStartWins) {
+        this.sessionId = report.sessionId;
+        this.sessionStartSeq = report.seq;
+        if (report.event === "SessionStart") this.confirmedSessionSeq = report.seq;
+        this.status = null; // a new session starts fresh; the old status is stale
+        this.lastStatusSeq = Number.NEGATIVE_INFINITY;
+      }
     }
 
     // A report belongs to the current session when its id matches; an id-less report

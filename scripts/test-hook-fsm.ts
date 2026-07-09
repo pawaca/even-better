@@ -84,6 +84,21 @@ test("tracker: a stale old-session status is ignored after a newer SessionStart"
   assert.equal(e.status, undefined); // must not drive the new session's UI
 });
 
+test("tracker: a real SessionStart recovers from an initial stale higher-seq old-session report", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("Stop", 350, { sessionId: "old" })); // first report is a delayed old-session status, high seq
+  t.apply(rep("SessionStart", 300, { sessionId: "new" })); // the real new SessionStart, lower seq
+  const e = t.apply(rep("UserPromptSubmit", 400, { sessionId: "new" }));
+  assert.equal(e.status, "busy"); // recovered onto the new session
+});
+
+test("tracker: an older SessionStart does not switch back after a newer one", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 300, { sessionId: "new" }));
+  const e = t.apply(rep("SessionStart", 250, { sessionId: "old" })); // delayed older SessionStart
+  assert.equal(e.sessionId, undefined); // must not switch back
+});
+
 test("tracker: a delayed higher-seq old-session report does not switch back (only SessionStart switches)", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 100, { sessionId: "old" }));
