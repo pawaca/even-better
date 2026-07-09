@@ -162,6 +162,16 @@ test("tracker: a current-session status past the boundary still applies", () => 
   assert.equal(t.apply(rep("UserPromptSubmit", 350, { sessionId: "new" })).status, "busy");
 });
 
+test("tracker: metadata from an unconfirmed (non-SessionStart) session is deferred until a SessionStart", () => {
+  const t = new HookTurnTracker();
+  const e1 = t.apply(rep("Stop", 350, { sessionId: "old", transcriptPath: "/old.jsonl" })); // stale first report
+  assert.equal(e1.sessionId, undefined); // unconfirmed — not surfaced
+  assert.equal(e1.transcriptPath, undefined);
+  const e2 = t.apply(rep("SessionStart", 300, { sessionId: "new", transcriptPath: "/new.jsonl" }));
+  assert.equal(e2.sessionId, "new"); // confirmed session surfaces its transcript
+  assert.equal(e2.transcriptPath, "/new.jsonl");
+});
+
 test("tracker: newer session metadata (higher seq) wins", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 100, { sessionId: "old", transcriptPath: "/old.jsonl" }));

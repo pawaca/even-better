@@ -69,6 +69,7 @@ export class HookTurnTracker {
   private sessionId: string | undefined; // current session id
   private sessionStartSeq = Number.NEGATIVE_INFINITY; // seq the current session began (advances only on a session change)
   private confirmedSessionSeq = Number.NEGATIVE_INFINITY; // seq of the latest accepted SessionStart
+  private sessionConfirmed = false; // has the current session been seen via a SessionStart?
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
 
@@ -96,6 +97,7 @@ export class HookTurnTracker {
       if (firstEstablish || sessionStartWins) {
         this.sessionId = report.sessionId;
         this.sessionStartSeq = report.seq;
+        this.sessionConfirmed = report.event === "SessionStart";
         if (report.event === "SessionStart") this.confirmedSessionSeq = report.seq;
         this.status = null; // a new session starts fresh; the old status is stale
         this.lastStatusSeq = Number.NEGATIVE_INFINITY;
@@ -113,6 +115,7 @@ export class HookTurnTracker {
       report.seq > this.confirmedSessionSeq
     ) {
       this.confirmedSessionSeq = report.seq;
+      this.sessionConfirmed = true;
     }
 
     // A report belongs to the current session when its id matches; an id-less report
@@ -125,7 +128,12 @@ export class HookTurnTracker {
       report.sessionId !== undefined
         ? report.sessionId === this.sessionId
         : report.seq >= this.sessionStartSeq;
-    if (currentSession) {
+    // Surface metadata only for a *confirmed* session (one seen via a SessionStart).
+    // A session established from a stale non-SessionStart first report must not push
+    // the pane onto a possibly-old transcript — bridge.noteSessionId is a no-op once
+    // tailing, so it couldn't later retarget. The confirming SessionStart carries the
+    // transcript path, so nothing is lost.
+    if (currentSession && this.sessionConfirmed) {
       if (report.sessionId) effect.sessionId = report.sessionId;
       if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;
     }
