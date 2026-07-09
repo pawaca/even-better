@@ -34,7 +34,7 @@ payload from stdin, **self-identifies its pane**, and reports to even-better.
 
 ```sh
 # read stdin payload, resolve pane id from whichever mux set it, POST to us
-pane_id="${CMUX_PANEL_ID:-${HERDR_PANE_ID:-}}"     # Phase 2 adds ${TMUX_PANE}
+pane_id="${CMUX_SURFACE_ID:-${CMUX_PANEL_ID:-${HERDR_PANE_ID:-}}}"   # Phase 2 adds ${TMUX_PANE}
 # report {mux, paneId, sessionId, transcriptPath, event, cwd, pid, ts} -> local endpoint
 ```
 
@@ -54,10 +54,12 @@ command.
 The crux, resolved by reading both reference implementations:
 
 - **Primary: the pane-id env var**, which each mux sets in its pane and which
-  **equals even-better's `paneId`** — proven for cmux (`CMUX_PANEL_ID` ==
-  `surfaceId` == `paneId`) and herdr (source: `cmd.env(HERDR_PANE_ID_ENV_VAR,
-  &identity.pane_id)`, and `pane_id` is what `agent.list` returns). herdr relies
-  on this env var alone.
+  **equals even-better's `paneId`** — proven for cmux (**`CMUX_SURFACE_ID`** ==
+  `surfaceId` == `paneId`; the documented surface variable, also what cmux's own
+  `send`/`read-screen` and Codex hook target — `CMUX_PANEL_ID` is observed as an
+  equal alias, so prefer `CMUX_SURFACE_ID`) and herdr (source:
+  `cmd.env(HERDR_PANE_ID_ENV_VAR, &identity.pane_id)`, and `pane_id` is what
+  `agent.list` returns). herdr relies on this env var alone.
 - **Fallback: PID → pane.** cmux's routing teaches the lesson — the env can be
   stale on resume / in a subprocess, so it also binds by caller PID/TTY
   (*"a PID lives in exactly one surface"*). We map the hook's `pid` to a pane via
