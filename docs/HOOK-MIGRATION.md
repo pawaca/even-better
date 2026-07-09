@@ -182,8 +182,9 @@ carries the **`closed` lifecycle signal** (herdr `pane.closed` / cmux
 `surface.closed` → `closed`), which `PaneBridge.onStatus` uses to dispose the
 bridge. Self-installed hooks **do not fire when the pane/surface is closed**, so
 without this a session would keep polling a dead pane until the next `/sessions`
-reconcile. On cmux/herdr the mux keeps installing *its* hooks too; we simply
-ignore its busy/idle.
+reconcile. On cmux/herdr the mux keeps installing *its* hooks too; we
+ignore its busy/idle **per-pane, once that pane's self-hook is observed** (see the
+per-pane cutover gate below).
 
 ## Startup reconciliation (hooks are one-shot)
 
@@ -206,6 +207,20 @@ for the next hook:
 Without this, a restart leaves every running session blank and any open approval
 unanswerable until the pane next acts — so the reconcile path is **required** before
 hooks become the sole live status/session source.
+
+## Per-pane cutover (hook-observed gate)
+
+A running Claude/Codex process loads its hook config at launch and does **not
+reliably hot-reload** it, so a pane that existed **before** install will never fire
+our hooks. Startup reconciliation snapshots such a pane's current state, but its
+future `UserPromptSubmit`/`Stop` never arrive — it would appear once, then go stale.
+
+So the cutover is **per-pane, gated on observing the self-hook**: a pane keeps using
+the **mux status/session** until even-better has seen at least one hook report from
+it; only then does it switch to hook-sourced signals. Panes launched *after* install
+fire the hook from the start; pre-existing panes are either restarted by the user or
+stay on the mux fallback. This makes the migration gradual and reversible — and
+means **"disable mux busy/idle" is a per-pane state, not a global switch**.
 
 ## Retirement (after Phase 1 is stable)
 
