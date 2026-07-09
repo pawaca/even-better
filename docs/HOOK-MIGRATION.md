@@ -276,7 +276,11 @@ With the semantic layer proven, a backend is just three terminal primitives:
   `Multiplexer` key; `#{pane_pid}` is *only* the PID-fallback correlation input,
   not a target.
 - **send:** `send-keys -t <pane_id> -l "…"` + `Enter`.
-- **read:** `capture-pane -p -t <pane_id>` (menus).
+- **read:** `capture-pane -p -t <pane_id>` (menus) — this captures the **visible**
+  screen, which *is* the active alternate-screen TUI/menu (verified empirically on
+  tmux 3.6a: default capture returns the alt-screen content). Do **not** add `-a`:
+  it additionally dumps the normal-buffer scrollback (pre-TUI shell output) and
+  would pollute `parseMenu`.
 
 ### Which backends, and why (rough reach vs. adapter cost)
 
