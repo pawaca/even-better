@@ -23,8 +23,9 @@ fragile mux-specific parsing. The mux collapses to three terminal primitives:
 
 - **In:** Claude + Codex, under **herdr and cmux only**. Status + session sourced
   from our hooks. Terminal control (list/send/read) unchanged.
-- **Out:** tmux (Phase 2). Removing screen menu detection — **Codex exec/patch
-  approvals stay screen** (`capture`/`parseMenu`); they are not hook events.
+- **Out:** tmux (Phase 2). Not *removing* screen menu detection — it stays as a
+  fallback (`capture`/`parseMenu`), though Codex's `PermissionRequest` hook lets us
+  drive most approvals structurally instead (see the event map).
 
 ## The hook (shape follows herdr's `herdr-agent-state.sh`)
 
@@ -37,8 +38,16 @@ pane_id="${CMUX_PANEL_ID:-${HERDR_PANE_ID:-}}"     # Phase 2 adds ${TMUX_PANE}
 # report {mux, paneId, sessionId, transcriptPath, event, cwd, pid, ts} -> local endpoint
 ```
 
-Report is **fire-and-forget** — it must never block the agent's turn (hooks run
-synchronously inside it; herdr/cmux both cap with a timeout and swallow errors).
+Report is **fire-and-forget, and that must be enforced by the hook itself** — the
+agent runs hooks **synchronously** and its defaults are dangerous (Claude
+command/http hooks block on a long default; Codex defaults to **600s** when
+`timeout` is omitted). If even-better is stopped or the loopback endpoint stalls,
+a synchronous `POST` from `UserPromptSubmit`/`PreToolUse` would **freeze the
+agent's turn**. So the hook must: (1) set a **short per-hook timeout** (~2–5s, as
+cmux's `hooks.json` does), (2) **background/detach** the report so control returns
+immediately, and (3) **swallow all failures** (exit 0). Never rely on the mux to
+bound this — under self-hooks it is Claude/Codex, not herdr/cmux, executing the
+command.
 
 ## Correlation — env primary + PID fallback
 
@@ -87,14 +96,26 @@ Note the tool-name special case: only `PermissionRequest` and `PreToolUse` for
 `AskUserQuestion`/`ExitPlanMode` are interactive — **every other `PreToolUse` is
 busy work** (Read/Bash under skip-permissions have no menu). This mirrors the
 existing routing (`src/cmux.ts` `agent.hook.PreToolUse`, `docs/MULTIPLEXERS.md`);
-mapping all `PreToolUse` to awaiting would emit a bogus permission flow. Codex
-exec/patch approvals are not hooks at all and **stay screen**.
+mapping all `PreToolUse` to awaiting would emit a bogus permission flow.
+
+**Codex `PermissionRequest` is authoritative when present.** Contrary to the old
+cmux screen-only limitation, Codex *does* fire a `PermissionRequest` hook when it
+is about to ask for approval — including shell escalation, with `Bash`/`apply_patch`
+matchers. Phase 1 should treat that hook as the structured `awaiting` signal
+(better than parsing the menu) and **demote screen parsing to a fallback** for
+approval *contexts the hook doesn't cover*, rather than preserving screen-only as
+if it were native behaviour.
 
 Two pitfalls both references flag: **`Stop` ≠ session end** (don't clear the
 session on a turn boundary), and **subagent events must not drive the main pane.**
 
-Bonus: the payload carries **`transcript_path`**, so we get the jsonl path
-directly and can **retire the `findSessionFile` directory scan**.
+Bonus: the payload usually carries **`transcript_path`**, so we get the jsonl path
+directly. But Codex documents this common field as `string | null` (present only
+"if any"), so on a session/startup/resume hook that reports `null` we still need a
+path. **Prefer the hook's `transcript_path`; fall back to the
+`findSessionFile`/`findCodexSessionFile` scan when it is null/absent** — do not
+remove the scan outright, or a null-path Codex pane would never upgrade and (under
+the transcript-only invariant) show nothing on the glasses.
 
 ## Install / uninstall
 
@@ -120,7 +141,8 @@ status (one authoritative source per bridge).
 
 - cmux hook-sessions parsing: `foldHookSessions`, `isStaleZombie`, `bareSession`.
 - herdr `agent_session` handling in `watchStatus`.
-- `findSessionFile` / `findCodexSessionFile` scans (path now from the hook).
+- `findSessionFile` / `findCodexSessionFile` scans — **kept as a fallback** for a
+  null/absent hook `transcript_path` (Codex), not retired.
 - `watchStatus`'s status normalization (status now from hooks).
 
 Keep: `listPanes`, `send`, `read`; the `Multiplexer` seam shrinks accordingly.
