@@ -51,12 +51,13 @@ command.
 
 **Ordering:** backgrounding (2) breaks the tie between the agent's synchronous hook
 order and delivery order — a stalled `UserPromptSubmit` `POST` could land *after*
-its `Stop`, leaving the bridge idle for the `Stop` (no-op) and then entering a turn
-on the late busy with no `Stop` to close it (stuck busy). So each report carries a
-**per-pane monotonic `seq`** (herdr's hook stamps `report_seq = time.time_ns()`),
-and the endpoint **applies reports in `seq` order and ignores stale/older ones** per
-pane. This keeps detached delivery from corrupting the busy/idle machine without
-re-introducing a blocking, serialized `POST`.
+its `Stop`. Each report therefore carries a **per-pane monotonic `seq`** (herdr's
+hook stamps `report_seq = time.time_ns()`). The endpoint must be **order-tolerant**,
+which is **not** the same as naive stale-drop: dropping a lower-`seq`
+`UserPromptSubmit` that arrives after its `Stop` would lose the turn-start entirely
+(no busy, no result). It needs either a **short reorder buffer** keyed by `seq`, or
+**turn state that can open from a late start and close an unopened turn** — the
+exact mechanism is an implementation detail (see [Scope boundary](#scope-boundary--deferred-to-implementation)).
 
 ## Correlation — env primary + PID fallback
 
@@ -234,8 +235,16 @@ after cutover there is no mux busy/idle to catch it, so a bridge could stay busy
 idle wrongly until a restart. A low-frequency backstop that re-derives busy/idle
 from **transcript activity** (the transcript is tailed anyway: new content ⇒ busy,
 sustained quiescence ⇒ idle) and honours the retained mux `closed` signal
-**self-heals** a dropped report without a durable hook-side spool. The seq-ordered
+self-heals **most** dropped reports without a durable hook-side spool. The seq-ordered
 hook reports remain the fast path; this is only the safety net.
+
+The **residual**: a dropped turn-*start* for a turn that emits no intermediate
+transcript records (e.g. an all-reasoning Codex turn) looks identical to idle, so the
+backstop can't show busy until the final message lands. Closing that fully needs a
+stronger delivery guarantee — durable retry/spool, or keeping the mux status as a
+secondary until self-hook delivery is proven reliable — which is an implementation
+choice (see [Scope boundary](#scope-boundary--deferred-to-implementation)), not
+fixed by transcript quiescence alone.
 
 ## Per-pane cutover (hook-observed gate)
 
@@ -294,6 +303,25 @@ Phase 1 is done when, **under both herdr and cmux**, status + session come purel
 from our hooks (mux status/session disabled) and behaviour matches or beats today
 — busy/idle timing, transcript upgrade, awaiting — verified via `tools/app-sim.ts`
 recordings on each backend.
+
+## Scope boundary — deferred to implementation
+
+This is a **design doc**: it fixes the *approach* (self-hooks for status/session,
+env-primary + PID correlation, per-pane hook-observed cutover, keep the mux for
+discover/send/close, transcript-only fallback) and names the *major risks*. It is
+**not** an implementation spec, and prose can't be compiled or tested — so the
+following are settled **at implementation time, against real code + tests**, where
+they are bounded, and are explicitly out of scope here:
+
+- The exact **order-tolerant delivery** mechanism (reorder buffer vs. stateful turn
+  handling) and the **dropped-report reliability** guarantee (transcript backstop
+  vs. durable spool/retry vs. mux-as-secondary duration).
+- Concrete **cadences/thresholds** (`IDLE_GRACE_MS`, backstop poll interval, hook
+  timeout seconds, reorder window).
+- The precise wiring of the reconcile classifiers and the endpoint/state machine.
+
+Treat further edge-case enumeration at this layer as implementation review, not
+design review.
 
 ## Then Phase 2 — new backends
 
