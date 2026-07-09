@@ -63,12 +63,20 @@ export interface HookEffect {
  */
 export class HookTurnTracker {
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
+  private lastSessionSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
 
   apply(report: HookReport): HookEffect {
     const effect: HookEffect = {};
-    if (report.sessionId) effect.sessionId = report.sessionId;
-    if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;
+
+    // Session metadata is seq-ordered too: on a pane that switched sessions, a
+    // delayed lower-seq report from the *old* session must not return its stale
+    // transcript over a newer SessionStart and attach the pane to the old jsonl.
+    if ((report.sessionId || report.transcriptPath) && report.seq > this.lastSessionSeq) {
+      this.lastSessionSeq = report.seq;
+      if (report.sessionId) effect.sessionId = report.sessionId;
+      if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;
+    }
 
     const cls = classifyStatus(report);
     if (cls !== null && report.seq > this.lastStatusSeq) {

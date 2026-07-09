@@ -68,6 +68,22 @@ test("tracker: extracts session id + transcript path from any report, regardless
   assert.equal(e.status, undefined); // SessionStart carries no status
 });
 
+test("tracker: stale (lower-seq) session metadata is ignored after a newer SessionStart", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 300, { sessionId: "new", transcriptPath: "/new.jsonl" }));
+  const e = t.apply(rep("Stop", 200, { sessionId: "old", transcriptPath: "/old.jsonl" })); // delayed old session
+  assert.equal(e.sessionId, undefined);
+  assert.equal(e.transcriptPath, undefined);
+});
+
+test("tracker: newer session metadata (higher seq) wins", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 100, { sessionId: "old", transcriptPath: "/old.jsonl" }));
+  const e = t.apply(rep("SessionStart", 200, { sessionId: "new", transcriptPath: "/new.jsonl" }));
+  assert.equal(e.sessionId, "new");
+  assert.equal(e.transcriptPath, "/new.jsonl");
+});
+
 test("tracker: StopFailure closes with closeError (latest-wins)", () => {
   const t = new HookTurnTracker();
   t.apply(rep("UserPromptSubmit", 100));
