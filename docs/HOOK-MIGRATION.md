@@ -35,7 +35,7 @@ payload from stdin, **self-identifies its pane**, and reports to even-better.
 ```sh
 # read stdin payload, resolve pane id from whichever mux set it, POST to us
 pane_id="${CMUX_SURFACE_ID:-${CMUX_PANEL_ID:-${HERDR_PANE_ID:-}}}"   # Phase 2 adds ${TMUX_PANE}
-# report {mux, paneId, sessionId, transcriptPath, event, cwd, pid, ts} -> local endpoint
+# report {mux, paneId, sessionId, transcriptPath, event, cwd, pid, ts, seq} -> local endpoint
 ```
 
 Report is **fire-and-forget, and that must be enforced by the hook itself** — the
@@ -48,6 +48,15 @@ cmux's `hooks.json` does), (2) **background/detach** the report so control retur
 immediately, and (3) **swallow all failures** (exit 0). Never rely on the mux to
 bound this — under self-hooks it is Claude/Codex, not herdr/cmux, executing the
 command.
+
+**Ordering:** backgrounding (2) breaks the tie between the agent's synchronous hook
+order and delivery order — a stalled `UserPromptSubmit` `POST` could land *after*
+its `Stop`, leaving the bridge idle for the `Stop` (no-op) and then entering a turn
+on the late busy with no `Stop` to close it (stuck busy). So each report carries a
+**per-pane monotonic `seq`** (herdr's hook stamps `report_seq = time.time_ns()`),
+and the endpoint **applies reports in `seq` order and ignores stale/older ones** per
+pane. This keeps detached delivery from corrupting the busy/idle machine without
+re-introducing a blocking, serialized `POST`.
 
 ## Correlation — env primary + PID fallback
 
