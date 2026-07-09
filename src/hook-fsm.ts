@@ -66,8 +66,8 @@ export interface HookEffect {
  * id/path are extracted (seq-ordered) from any report, independent of status.
  */
 export class HookTurnTracker {
-  private sessionId: string | undefined; // current session = the highest-seq report's session
-  private sessionSeq = Number.NEGATIVE_INFINITY;
+  private sessionId: string | undefined; // current session id
+  private sessionStartSeq = Number.NEGATIVE_INFINITY; // seq the current session began (advances only on a session change)
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
 
@@ -80,29 +80,31 @@ export class HookTurnTracker {
     // reset the main turn. Drop them before any session/status tracking.
     if (report.event === "SubagentStart" || report.event === "SubagentStop") return effect;
 
-    // Track the current session = the sessionId of the highest-seq session-bearing
-    // report. Advancing it only on an *actual* session-id change (not on every
-    // same-session report) is deliberate: it keeps out-of-order same-session delivery
-    // tolerated while still fencing off a prior session. A real change resets status.
-    if (report.sessionId && report.seq > this.sessionSeq) {
-      if (report.sessionId !== this.sessionId) {
-        this.status = null; // a new session starts fresh; the old status is stale
-        this.lastStatusSeq = Number.NEGATIVE_INFINITY;
-      }
+    // Switch to a newer session ONLY on an actual session-id change (with a higher
+    // seq than the current session's start). Crucially, do NOT advance the boundary on
+    // same-session reports: doing so would raise sessionStartSeq past a later same-
+    // session id-less status and wrongly drop it. A real change resets status.
+    if (
+      report.sessionId &&
+      report.sessionId !== this.sessionId &&
+      report.seq > this.sessionStartSeq
+    ) {
       this.sessionId = report.sessionId;
-      this.sessionSeq = report.seq;
+      this.sessionStartSeq = report.seq;
+      this.status = null; // a new session starts fresh; the old status is stale
+      this.lastStatusSeq = Number.NEGATIVE_INFINITY;
     }
 
     // A report belongs to the current session when its id matches; an id-less report
     // (no session_id in the payload) can't be matched by identity, so gate it by the
-    // session boundary — it must not predate the current session's start (sessionSeq
-    // is -Inf until one is established, so id-less-only streams stay latest-wins).
-    // Metadata + status are surfaced only for the current session, so a delayed
-    // prior-session report can't return a stale transcript or drive the new UI.
+    // session boundary — its seq must not predate the current session's start
+    // (sessionStartSeq is -Inf until one is established, so id-less-only streams stay
+    // latest-wins). Metadata + status are surfaced only for the current session, so a
+    // delayed prior-session report can't return a stale transcript or drive the new UI.
     const currentSession =
       report.sessionId !== undefined
         ? report.sessionId === this.sessionId
-        : report.seq >= this.sessionSeq;
+        : report.seq >= this.sessionStartSeq;
     if (currentSession) {
       if (report.sessionId) effect.sessionId = report.sessionId;
       if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;

@@ -84,6 +84,15 @@ test("tracker: a stale old-session status is ignored after a newer SessionStart"
   assert.equal(e.status, undefined); // must not drive the new session's UI
 });
 
+test("tracker: a same-session non-status report doesn't fence out a lower-seq id-less status", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 100, { sessionId: "s" }));
+  t.apply(rep("UserPromptSubmit", 150, { sessionId: "s" })); // busy
+  t.apply(rep("PostToolUse", 300, { sessionId: "s" })); // same session, no status, high seq, early
+  const e = t.apply(rep("Stop", 250)); // same-session id-less Stop, lower seq
+  assert.equal(e.status, "idle"); // must still close — same session
+});
+
 test("tracker: an id-less stale status from before a session change is rejected", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 300, { sessionId: "new" }));
