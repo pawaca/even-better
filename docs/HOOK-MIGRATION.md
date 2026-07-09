@@ -132,20 +132,35 @@ the transcript-only invariant) show nothing on the glasses.
 
 ## What the mux still does (Phase 1)
 
-`listPanes` (discover), `typeAndSubmit` (send), `read` (screen menus). Its
-**status stream and session id become unused** — sourced from hooks instead. On
-cmux/herdr the mux keeps installing *its* hooks too; we simply don't consume its
-status (one authoritative source per bridge).
+`listPanes` (discover), `typeAndSubmit` (send), `read` (screen menus). We stop
+consuming its **busy/idle + session id** (hooks provide those — one authoritative
+source per bridge), but the status subscription is **not** dropped: it still
+carries the **`closed` lifecycle signal** (herdr `pane.closed` / cmux
+`surface.closed` → `closed`), which `PaneBridge.onStatus` uses to dispose the
+bridge. Self-installed hooks **do not fire when the pane/surface is closed**, so
+without this a session would keep polling a dead pane until the next `/sessions`
+reconcile. On cmux/herdr the mux keeps installing *its* hooks too; we simply
+ignore its busy/idle.
 
 ## Retirement (after Phase 1 is stable)
 
-- cmux hook-sessions parsing: `foldHookSessions`, `isStaleZombie`, `bareSession`.
-- herdr `agent_session` handling in `watchStatus`.
-- `findSessionFile` / `findCodexSessionFile` scans — **kept as a fallback** for a
-  null/absent hook `transcript_path` (Codex), not retired.
-- `watchStatus`'s status normalization (status now from hooks).
+- herdr `agent_session` handling in `watchStatus` (session now from the hook).
+- `watchStatus`'s **busy/idle** normalization (status now from hooks) — but **keep
+  the `closed` branch** (see above).
 
-Keep: `listPanes`, `send`, `read`; the `Multiplexer` seam shrinks accordingly.
+**Not retired in Phase 1** (each has a live non-status role that must be re-sourced
+first):
+
+- **cmux `foldHookSessions` / hook-sessions parsing** — `cmux.listPanes()` is built
+  *entirely* from `refreshMaps()` reading `~/.cmuxterm/*-hook-sessions.json`
+  (`src/cmux.ts`), so it still powers **discovery**. It only sheds its
+  session/status role in Phase 1; full retirement waits until cmux discovery is
+  re-sourced (e.g. from our hook's `SessionStart` or a cmux surface-list API).
+- **`findSessionFile` / `findCodexSessionFile`** — kept as the **fallback** for a
+  null/absent hook `transcript_path` (Codex).
+
+Keep: `listPanes`, `send`, `read`, and the `closed` signal; the `Multiplexer` seam
+shrinks only where a hook fully replaces a role.
 
 ## Open items
 
