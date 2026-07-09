@@ -84,6 +84,17 @@ test("tracker: a stale old-session status is ignored after a newer SessionStart"
   assert.equal(e.status, undefined); // must not drive the new session's UI
 });
 
+test("tracker: subagent events never touch the main pane's session or status", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("UserPromptSubmit", 100, { sessionId: "main" })); // main session busy
+  const e = t.apply(rep("SubagentStop", 200, { sessionId: "sub", transcriptPath: "/sub.jsonl" }));
+  assert.equal(e.sessionId, undefined); // subagent metadata not surfaced
+  assert.equal(e.transcriptPath, undefined);
+  assert.equal(e.status, undefined);
+  assert.equal(t.current(), "busy"); // main turn untouched
+  assert.equal(t.apply(rep("Stop", 300, { sessionId: "main" })).status, "idle"); // main still closes
+});
+
 test("tracker: a same-session out-of-order status is still accepted (no false boundary)", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SubagentStop", 300, { sessionId: "s" })); // ignored non-status, delivered early

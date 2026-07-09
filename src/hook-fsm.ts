@@ -74,6 +74,12 @@ export class HookTurnTracker {
   apply(report: HookReport): HookEffect {
     const effect: HookEffect = {};
 
+    // Subagent events must NEVER touch the main pane — not its session, transcript,
+    // or status (event map + herdr's note). A subagent runs under its own session id,
+    // so letting one through here would switch the pane to the subagent's session and
+    // reset the main turn. Drop them before any session/status tracking.
+    if (report.event === "SubagentStart" || report.event === "SubagentStop") return effect;
+
     // Track the current session = the sessionId of the highest-seq session-bearing
     // report. Advancing it only on an *actual* session-id change (not on every
     // same-session report) is deliberate: it keeps out-of-order same-session delivery
