@@ -172,6 +172,28 @@ without this a session would keep polling a dead pane until the next `/sessions`
 reconcile. On cmux/herdr the mux keeps installing *its* hooks too; we simply
 ignore its busy/idle.
 
+## Startup reconciliation (hooks are one-shot)
+
+Hooks are *events*, not state — a `SessionStart` or `PermissionRequest` that fired
+before even-better started (or across a restart) is gone (fire-and-forget, exits 0
+when the endpoint is down). So hooks are the live fast path, but **startup and each
+newly-discovered pane must reconcile current state from durable sources**, not wait
+for the next hook:
+
+- **session id / transcript** — from the mux's *persisted* discovery state, which
+  Phase 1 keeps: cmux `*-hook-sessions.json` carries `sessionId` + `transcriptPath`
+  (a second reason to keep cmux discovery, per the retirement note); herdr
+  `agent_session` is queryable from the socket at any time. An already-running pane
+  upgrades to its transcript immediately, without a fresh `SessionStart`.
+- **open approval / `awaiting`** — from a **screen read** (`capture` + `parseMenu`)
+  at discovery, so a pane already blocked on a menu stays answerable from the
+  glasses (this is the same screen path retained above).
+- **busy/idle** — inferred from transcript quiescence (or a one-time status read).
+
+Without this, a restart leaves every running session blank and any open approval
+unanswerable until the pane next acts — so the reconcile path is **required** before
+hooks become the sole live status/session source.
+
 ## Retirement (after Phase 1 is stable)
 
 - herdr `agent_session` handling in `watchStatus` (session now from the hook).
