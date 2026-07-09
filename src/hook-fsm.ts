@@ -80,14 +80,19 @@ export class HookTurnTracker {
     // reset the main turn. Drop them before any session/status tracking.
     if (report.event === "SubagentStart" || report.event === "SubagentStop") return effect;
 
-    // Switch to a newer session ONLY on an actual session-id change (with a higher
-    // seq than the current session's start). Crucially, do NOT advance the boundary on
-    // same-session reports: doing so would raise sessionStartSeq past a later same-
-    // session id-less status and wrongly drop it. A real change resets status.
+    // Establish the first session from any report; but once a session is known, only
+    // switch to a *different* id on an actual `SessionStart`. A delayed old-session
+    // async hook can run *after* the new session began, so its `time.time_ns()` seq is
+    // higher than the new SessionStart's — switching on any higher-seq report would
+    // flip the tracker back to the old session. Gating switches to SessionStart avoids
+    // that (a dropped SessionStart is recovered by Stage 3's reconciliation). We never
+    // advance the boundary on same-session reports (that would fence out a later same-
+    // session id-less status). A real change resets status.
     if (
       report.sessionId &&
       report.sessionId !== this.sessionId &&
-      report.seq > this.sessionStartSeq
+      report.seq > this.sessionStartSeq &&
+      (this.sessionId === undefined || report.event === "SessionStart")
     ) {
       this.sessionId = report.sessionId;
       this.sessionStartSeq = report.seq;
