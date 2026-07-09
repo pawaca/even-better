@@ -102,6 +102,19 @@ export class HookTurnTracker {
       }
     }
 
+    // Record a SessionStart confirmation for the *current* session too — e.g. when the
+    // id was first learned from an out-of-order status report and A's real SessionStart
+    // arrives afterward (the switch block above skips it since the id already matches).
+    // Without this, confirmedSessionSeq stays -Inf and a still-older prior-session
+    // SessionStart could win against it and switch back.
+    if (
+      report.event === "SessionStart" &&
+      report.sessionId === this.sessionId &&
+      report.seq > this.confirmedSessionSeq
+    ) {
+      this.confirmedSessionSeq = report.seq;
+    }
+
     // A report belongs to the current session when its id matches; an id-less report
     // (no session_id in the payload) can't be matched by identity, so gate it by the
     // session boundary — its seq must not predate the current session's start

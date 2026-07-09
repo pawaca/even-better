@@ -92,6 +92,14 @@ test("tracker: a real SessionStart recovers from an initial stale higher-seq old
   assert.equal(e.status, "busy"); // recovered onto the new session
 });
 
+test("tracker: a same-session SessionStart is recorded, blocking a still-older prior-session SessionStart", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("UserPromptSubmit", 200, { sessionId: "A" })); // establish A from a status report
+  t.apply(rep("SessionStart", 150, { sessionId: "A" })); // A's delayed real SessionStart (same id)
+  const e = t.apply(rep("SessionStart", 100, { sessionId: "B" })); // older prior-session SessionStart
+  assert.equal(e.sessionId, undefined); // must not switch to B
+});
+
 test("tracker: an older SessionStart does not switch back after a newer one", () => {
   const t = new HookTurnTracker();
   t.apply(rep("SessionStart", 300, { sessionId: "new" }));
