@@ -565,7 +565,14 @@ export class PaneBridge {
 
   /** Feed a self-hook report (Stage 3). The first report flips this pane to
    *  hook-sourced status/session (per-pane cutover). Reports are routed here only
-   *  when SELF_HOOK is enabled; the tracker resolves out-of-order delivery. */
+   *  when SELF_HOOK is enabled; the tracker resolves out-of-order delivery.
+   *
+   *  Scope: this path is deliberately latest-wins with no lifecycle repair. The
+   *  turn-lifecycle residuals — a whole turn delivered Stop-first (no busy blip), a
+   *  blocked `UserPromptSubmit` that never gets its `Stop` (stuck busy), and dropped
+   *  reports — are recovered not here but by Stage 3b's transcript-quiescence backstop
+   *  (new content ⇒ busy, sustained quiescence ⇒ idle/result). Keeping this path
+   *  branch-free avoids per-status latency on the common in-order case. */
   onHookReport(report: HookReport): void {
     if (this.disposed) return;
     const effect = this.hookTracker.apply(report);
