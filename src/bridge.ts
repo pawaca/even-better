@@ -745,7 +745,19 @@ export class PaneBridge {
    *  session starts idle until its first `UserPromptSubmit` (which opens a clean turn via
    *  `enterBusyTurn`); no `result` is emitted, so the abandoned answer never surfaces. */
   private resetTurnStateForRetarget(): void {
-    this.turnCloseGen++; // invalidate an already-fired idle close that cancelIdle can't stop
+    // Always invalidate an in-flight close (see turnCloseGen) — an old-tail
+    // emitTurnResult() mid-await must never land on the retargeted turn.
+    this.turnCloseGen++;
+    // Only ABANDON the turn (idle + clear) when it isn't actively live. If a turn is
+    // running — busy with NO pending idle-close, or awaiting — the retarget is the
+    // transcript merely catching up to the NEW session whose turn already started
+    // (SessionStart set the pending target, then UserPromptSubmit drove busy before the
+    // jsonl appeared); clobbering it would strand that live turn's busy/result lifecycle.
+    // A session change only happens at the old session's prompt, so "busy with no pending
+    // close" is necessarily the new turn. During idle-grace state is still busy but the
+    // idle timer is set — that IS an ending turn, so it still resets.
+    const liveTurn = (this.state === "busy" && this.idleTimer === null) || this.state === "awaiting";
+    if (liveTurn) return;
     this.cancelIdle();
     this.idleCanceledForAwaiting = false;
     this.stopStats();
