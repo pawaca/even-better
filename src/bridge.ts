@@ -192,6 +192,10 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
+  // A session change whose new jsonl wasn't discoverable yet — the poll retries the
+  // retarget until the file appears. Needed because the tracker surfaces a session id
+  // only once (on change), so there is no second noteSessionId to drive the retry.
+  private pendingRetargetId: string | null = null;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
@@ -347,8 +351,17 @@ export class PaneBridge {
   noteSessionId(id: string): void {
     if (this.disposed || !id) return;
     if (this.onTranscript) {
-      if (id !== this.agentSessionId && this.upgradeToTranscript(id)) {
+      if (id === this.agentSessionId) {
+        this.pendingRetargetId = null; // already caught up
+        return;
+      }
+      if (this.upgradeToTranscript(id)) {
+        this.pendingRetargetId = null;
         console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+      } else {
+        // The new jsonl isn't discoverable yet — remember it so the poll retries the
+        // retarget until the file appears (the tracker won't re-surface this id).
+        this.pendingRetargetId = id;
       }
       return;
     }
@@ -378,6 +391,22 @@ export class PaneBridge {
             if (id && !this.onTranscript) this.noteSessionId(id);
           })
           .catch(() => {});
+      }
+      // Retarget retry: a session change reported a new jsonl before it existed. The
+      // tracker won't re-surface the id, so keep retrying (same throttle) until the
+      // file appears; the two upgrade paths are mutually exclusive on `onTranscript`.
+      if (
+        this.onTranscript &&
+        this.pendingRetargetId &&
+        Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
+      ) {
+        this.lastUpgradeTryMs = Date.now();
+        if (this.pendingRetargetId === this.agentSessionId) {
+          this.pendingRetargetId = null;
+        } else if (this.upgradeToTranscript(this.pendingRetargetId)) {
+          console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+          this.pendingRetargetId = null;
+        }
       }
       const tl = this.timeline;
       if (this.polling || !tl) return;
