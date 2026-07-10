@@ -304,6 +304,7 @@ export class PaneBridge {
       // transcript (a session-change retarget) — dispose it exactly once before the
       // swap so a retarget doesn't leak the old tail.
       const outgoing = this.timeline;
+      if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
       this.timeline = new TranscriptTimeline(file);
       this.screen = null;
@@ -316,6 +317,7 @@ export class PaneBridge {
       const file = findCodexSessionFile(id);
       if (!file) return false;
       const outgoing = this.timeline;
+      if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
       this.timeline = new CodexTranscriptTimeline(file);
       this.screen = null;
@@ -725,6 +727,25 @@ export class PaneBridge {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
+  }
+
+  /** A `/clear` or resume retargeted the tail mid-flight — abandon the previous turn's
+   *  pending state so it can't bleed into the newly tailed session. Chiefly: cancel a
+   *  pending idle-close (else its `emitTurnResult()` would flush the OLD session's final
+   *  answer into the new one) and drop any paced/queued output; also reset the per-turn
+   *  accounting. The next `UserPromptSubmit` opens a clean turn via `enterBusyTurn`. State
+   *  is left to the status machine (hook/mux) — we only clear what would leak content. */
+  private resetTurnStateForRetarget(): void {
+    this.cancelIdle();
+    this.idleCanceledForAwaiting = false;
+    this.stopStats();
+    this.out.clear();
+    this.lastProseBlock = "";
+    this.turnStartMs = 0;
+    this.turnInputTokens = 0;
+    this.turnOutputTokens = 0;
+    this.turnSuccess = true;
+    this.turnResultText = "";
   }
 
   private finishIgnoredBlocker(explain: Explanation): void {
