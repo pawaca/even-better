@@ -517,6 +517,12 @@ export class PaneBridge {
           closing: this.closing,
         }) === "busy"
       ) {
+        // Re-open a turn whose start hook we missed. A normal turn is then closed by its
+        // Stop. The residual — a turn with NO usable close signal (both effective hooks
+        // lost, or the impossible-in-practice Stop-first ordering) — lingers as a busy
+        // indicator until the next real signal, BY DESIGN: there is no safe time-based
+        // close (a quiet transcript can't be told apart from silent reasoning, so guessing
+        // would corrupt the transcript — see hook-backstop.ts / PR #35).
         console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);
         this.applyTurnStatus("busy");
       }
