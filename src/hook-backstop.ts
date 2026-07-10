@@ -17,9 +17,10 @@ export interface BackstopState {
   hookActive: boolean;
   /** The bridge's current app state. */
   appState: "idle" | "busy" | "awaiting";
-  /** The current busy turn was opened by a HOOK (vs. re-opened by this backstop). A
-   *  hook-driven turn is closed by its own Stop, so quiescence never closes it. */
-  turnHookDriven: boolean;
+  /** The current busy turn was opened by THIS backstop (content re-opened a settled idle),
+   *  not by a hook / app prompt / mux. Only such a turn is closed by quiescence — a normally
+   *  opened turn is closed by its own Stop and never second-guessed. */
+  turnBackstopOpened: boolean;
   /** An idle-grace close is already scheduled — don't stack another. */
   idlePending: boolean;
 }
@@ -40,9 +41,10 @@ export function backstopOnContent(s: BackstopState): "busy" | null {
 }
 
 /** On a periodic tick: should the backstop close a turn the hooks left open? Only a
- *  backstop-opened busy turn (`!turnHookDriven`), only after sustained quiescence, and
- *  never when an idle-grace close is already pending. Returns null (no action) for a
- *  hook-driven turn — its Stop owns the close — so a live hook flow is never overridden. */
+ *  turn THIS backstop opened (`turnBackstopOpened`), only after sustained quiescence, and
+ *  never when an idle-grace close is already pending. Returns null for a normally opened
+ *  turn (hook / app prompt / mux) — its own Stop owns the close — so a live flow is never
+ *  overridden. */
 export function backstopOnQuiescence(
   s: BackstopState,
   msSinceContent: number,
@@ -50,7 +52,7 @@ export function backstopOnQuiescence(
 ): "idle" | null {
   if (!s.hookActive) return null;
   if (s.appState !== "busy") return null;
-  if (s.turnHookDriven) return null;
+  if (!s.turnBackstopOpened) return null;
   if (s.idlePending) return null;
   return msSinceContent > quiescenceMs ? "idle" : null;
 }

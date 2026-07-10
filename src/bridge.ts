@@ -232,12 +232,16 @@ export class PaneBridge {
   // ignored SubagentStop, or a status-only hook) can flip `hookActive` while we still need
   // the mux fallback to resolve the transcript in the pre-transcript window.
   private hookSessionKnown = false;
-  // Stage 3b transcript-quiescence backstop (hook-backstop.ts). `turnHookDriven` = the
-  // current busy turn was opened by a hook (vs re-opened by the backstop) — quiescence only
-  // closes a NON-hook-driven turn. `lastContentMs` timestamps the last transcript content
-  // event, so quiescence is measured from real activity.
-  private turnHookDriven = false;
+  // Stage 3b transcript-quiescence backstop (hook-backstop.ts). `turnBackstopOpened` = the
+  // current busy turn was opened by the backstop (content re-opened a settled idle), not by
+  // a hook / app prompt / mux — quiescence only closes such a turn. `lastContentMs` stamps
+  // the last transcript content event, so quiescence is measured from real activity.
+  // `idleFromBackstop` tags an idle-close the backstop scheduled, so it can be revalidated
+  // (aborted) if content resumes during its grace — unlike a normal close, which the
+  // documented rule says must NOT cancel on content.
+  private turnBackstopOpened = false;
   private lastContentMs = 0;
+  private idleFromBackstop = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -482,7 +486,7 @@ export class PaneBridge {
           {
             hookActive: this.hookActive,
             appState: this.state,
-            turnHookDriven: this.turnHookDriven,
+            turnBackstopOpened: this.turnBackstopOpened,
             idlePending: this.idleTimer !== null,
           },
           Date.now() - this.lastContentMs,
@@ -490,7 +494,7 @@ export class PaneBridge {
         ) === "idle"
       ) {
         console.log(`[bridge ${this.paneId}] backstop: sustained quiescence → idle`);
-        this.applyTurnStatus("idle");
+        this.applyTurnStatus("idle", true); // tag as backstop close — revalidated at fire
       }
       const tl = this.timeline;
       if (this.polling || !tl) return;
@@ -534,13 +538,13 @@ export class PaneBridge {
         backstopOnContent({
           hookActive: this.hookActive,
           appState: this.state,
-          turnHookDriven: this.turnHookDriven,
+          turnBackstopOpened: this.turnBackstopOpened,
           idlePending: this.idleTimer !== null,
         }) === "busy"
       ) {
-        this.turnHookDriven = false; // backstop-opened — quiescence may close it
         console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);
-        this.applyTurnStatus("busy");
+        this.applyTurnStatus("busy"); // enterBusyTurn clears turnBackstopOpened...
+        this.turnBackstopOpened = true; // ...so tag AFTER: this turn is quiescence-closable
       }
     }
     switch (e.t) {
@@ -687,9 +691,10 @@ export class PaneBridge {
     this.applyTurnStatus(next);
   }
 
-  /** Drive the turn machine to `next` — shared by the mux status path (onStatus) and
-   *  the self-hook path (onHookReport). */
-  private applyTurnStatus(next: AppState): void {
+  /** Drive the turn machine to `next` — shared by the mux status path (onStatus), the
+   *  self-hook path (onHookReport), and the quiescence backstop. `fromBackstop` tags an
+   *  idle close the backstop scheduled so it can be revalidated at fire time. */
+  private applyTurnStatus(next: AppState, fromBackstop = false): void {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
       // between tool operations, not a real turn end.
@@ -718,6 +723,7 @@ export class PaneBridge {
     // do NOT cancel on content: the final block often lands during the grace
     // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
     // so canceling there would strand the turn as "streaming" forever.
+    this.idleFromBackstop = fromBackstop;
     this.scheduleIdleClose();
   }
 
@@ -759,10 +765,10 @@ export class PaneBridge {
       }
       // busy/idle (closeError closes like idle — the debounce still applies).
       const next: AppState = effect.status === "busy" ? "busy" : "idle";
-      // Mark hook-driven only when the hook OPENS the turn (idle → busy). A later busy hook
-      // (e.g. a mid-turn PreToolUse) on a turn the BACKSTOP already opened must not flip
-      // ownership — else a dropped Stop on it would leave quiescence unable to close it.
-      if (next === "busy" && this.state !== "busy") this.turnHookDriven = true;
+      // Ownership is handled by enterBusyTurn (clears turnBackstopOpened for ANY normal
+      // open — hook/app/mux); a late busy hook on an already-busy backstop turn skips
+      // enterBusyTurn, so it keeps its backstop ownership (a dropped Stop on it still closes
+      // by quiescence).
       console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
       this.applyTurnStatus(next);
     }
@@ -772,6 +778,14 @@ export class PaneBridge {
     if (this.state === "idle" || this.idleTimer) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
+      // A backstop-scheduled close is revalidated at fire time: if content arrived during
+      // the grace the live turn resumed (a long tool/reasoning gap, not a real end) — abort
+      // and let a later quiescence tick reschedule. The normal hook/mux close does NOT
+      // revalidate: its final block legitimately lands during the grace (the rule above).
+      if (this.idleFromBackstop) {
+        this.idleFromBackstop = false;
+        if (Date.now() - this.lastContentMs <= QUIESCENCE_MS) return; // resumed — stay busy
+      }
       this.state = "idle";
       this.stopStats();
       void this.emitTurnResult();
@@ -779,6 +793,9 @@ export class PaneBridge {
   }
 
   private enterBusyTurn(): void {
+    // Any NORMAL open (hook / app prompt / mux) is not backstop-owned, so quiescence won't
+    // close it — only the backstop re-tags true right after opening via content.
+    this.turnBackstopOpened = false;
     if (!this.turnStartMs) this.turnStartMs = Date.now();
     this.idleCanceledForAwaiting = false;
     this.screen?.resetTurn(); // new turn — allow repeats of past content
@@ -794,6 +811,7 @@ export class PaneBridge {
   }
 
   private cancelIdle(): void {
+    this.idleFromBackstop = false;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;

@@ -6,7 +6,7 @@ import type { BackstopState } from "../src/hook-backstop.js";
 const st = (o: Partial<BackstopState> = {}): BackstopState => ({
   hookActive: true,
   appState: "idle",
-  turnHookDriven: false,
+  turnBackstopOpened: true,
   idlePending: false,
   ...o,
 });
@@ -33,9 +33,9 @@ test("backstopOnQuiescence: waits for sustained quiescence", () => {
   assert.equal(backstopOnQuiescence(st({ appState: "busy" }), 0), null);
 });
 
-test("backstopOnQuiescence: never closes a HOOK-driven turn (its Stop owns the close)", () => {
+test("backstopOnQuiescence: never closes a normally opened turn (hook/app/mux)", () => {
   assert.equal(
-    backstopOnQuiescence(st({ appState: "busy", turnHookDriven: true }), QUIESCENCE_MS * 10),
+    backstopOnQuiescence(st({ appState: "busy", turnBackstopOpened: false }), QUIESCENCE_MS * 10),
     null,
   );
 });
