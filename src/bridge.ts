@@ -508,13 +508,16 @@ export class PaneBridge {
       return;
     }
     // Per-pane cutover: once this pane's own hook drives status/session, ignore the
-    // mux's busy/idle/session. Two mux signals are still honored: `closed` (handled
-    // above — hooks don't fire on pane close) and `awaiting` — codex exec/apply_patch
+    // mux's busy/idle/session. Still honored: `closed` (above — hooks don't fire on
+    // pane close), and the codex screen-approval signal. codex exec/apply_patch
     // approvals in a plain TUI are screen-only (no PermissionRequest hook fires), so
-    // CmuxMultiplexer's screen poll is their sole trigger. Off by default (hookActive
-    // stays false unless SELF_HOOK routes reports here).
+    // CmuxMultiplexer's screen poll is their sole trigger — enter `awaiting` on it,
+    // and while awaiting from that poll, let the mux drive the *clear* (busy/idle once
+    // the menu is answered), else a long approved command stays stuck awaiting. Off by
+    // default (hookActive stays false unless SELF_HOOK routes reports here).
     if (this.hookActive) {
-      if (toAppState(raw) === "awaiting") this.applyTurnStatus("awaiting");
+      const next = toAppState(raw);
+      if (next === "awaiting" || this.state === "awaiting") this.applyTurnStatus(next);
       return;
     }
     // The backend hands us the session id on the same event that reveals it
