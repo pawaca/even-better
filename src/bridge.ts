@@ -508,10 +508,15 @@ export class PaneBridge {
       return;
     }
     // Per-pane cutover: once this pane's own hook drives status/session, ignore the
-    // mux's busy/idle/session (the `closed` signal above is still honored — hooks
-    // don't fire on pane close). Off by default: hookActive stays false unless the
-    // SELF_HOOK flag routes hook reports to this bridge.
-    if (this.hookActive) return;
+    // mux's busy/idle/session. Two mux signals are still honored: `closed` (handled
+    // above — hooks don't fire on pane close) and `awaiting` — codex exec/apply_patch
+    // approvals in a plain TUI are screen-only (no PermissionRequest hook fires), so
+    // CmuxMultiplexer's screen poll is their sole trigger. Off by default (hookActive
+    // stays false unless SELF_HOOK routes reports here).
+    if (this.hookActive) {
+      if (toAppState(raw) === "awaiting") this.applyTurnStatus("awaiting");
+      return;
+    }
     // The backend hands us the session id on the same event that reveals it
     // (herdr's status event, cmux's SessionStart-refreshed maps) — upgrade to the
     // transcript here instead of polling for it.
@@ -567,8 +572,14 @@ export class PaneBridge {
     }
     if (effect.sessionId) this.noteSessionId(effect.sessionId);
     if (effect.status) {
-      // busy/awaiting/idle drive the turn machine; closeError (StopFailure) ends the
-      // turn like idle (the debounce still applies).
+      if (effect.status === "closeError") {
+        // StopFailure — the turn ended on an API error. Record it as failed before
+        // closing, else emitTurnResult would report the API-error turn as successful.
+        this.turnSuccess = false;
+        if (!this.turnResultText) this.turnResultText = "Turn ended on an API error.";
+      }
+      // busy/awaiting/idle drive the turn machine; closeError closes like idle
+      // (the debounce still applies).
       const next: AppState =
         effect.status === "busy" ? "busy" : effect.status === "awaiting" ? "awaiting" : "idle";
       console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
