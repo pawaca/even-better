@@ -521,6 +521,10 @@ export class PaneBridge {
         // from silent reasoning; guessing would corrupt the transcript — see hook-backstop.ts).
         if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
           console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
+          // Invalidate any in-flight close: if the prior turn's emitTurnResult() is mid-drain
+          // (state already idle, ~1.1s wait), bumping turnCloseGen makes it abort instead of
+          // emitting result/idle over this newly reopened turn (same guard as a retarget).
+          this.turnCloseGen++;
           this.applyTurnStatus("busy");
         }
         emit(this.paneId, { type: "user_prompt", text });
