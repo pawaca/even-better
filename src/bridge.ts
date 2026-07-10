@@ -13,6 +13,7 @@ import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcrip
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { HookTurnTracker } from "./hook-fsm.js";
 import type { HookReport } from "./hook-report.js";
+import { backstopOnContent, backstopOnQuiescence, QUIESCENCE_MS } from "./hook-backstop.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
 import { renderForGlasses } from "./render.js";
@@ -231,6 +232,12 @@ export class PaneBridge {
   // ignored SubagentStop, or a status-only hook) can flip `hookActive` while we still need
   // the mux fallback to resolve the transcript in the pre-transcript window.
   private hookSessionKnown = false;
+  // Stage 3b transcript-quiescence backstop (hook-backstop.ts). `turnHookDriven` = the
+  // current busy turn was opened by a hook (vs re-opened by the backstop) — quiescence only
+  // closes a NON-hook-driven turn. `lastContentMs` timestamps the last transcript content
+  // event, so quiescence is measured from real activity.
+  private turnHookDriven = false;
+  private lastContentMs = 0;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -467,6 +474,24 @@ export class PaneBridge {
           }
         }
       }
+      // Quiescence backstop: close a backstop-opened turn the hooks never closed (a
+      // dropped Stop on it). Only a non-hook-driven busy turn, only after sustained
+      // quiescence — a hook-driven turn's own Stop owns the close (see hook-backstop.ts).
+      if (
+        backstopOnQuiescence(
+          {
+            hookActive: this.hookActive,
+            appState: this.state,
+            turnHookDriven: this.turnHookDriven,
+            idlePending: this.idleTimer !== null,
+          },
+          Date.now() - this.lastContentMs,
+          QUIESCENCE_MS,
+        ) === "idle"
+      ) {
+        console.log(`[bridge ${this.paneId}] backstop: sustained quiescence → idle`);
+        this.applyTurnStatus("idle");
+      }
       const tl = this.timeline;
       if (this.polling || !tl) return;
       this.polling = true;
@@ -498,6 +523,26 @@ export class PaneBridge {
    *  source-, and heuristic-agnostic — a `say` is a `say` whether it came from
    *  the jsonl or a scraped screen. */
   private onAgentEvent(e: AgentEvent): void {
+    // Quiescence backstop: real transcript activity (not usage-only) marks the pane busy.
+    // Content while we (wrongly) think idle means a hook was dropped (a missed
+    // UserPromptSubmit, or a Stop-first whole turn) — re-open the turn. Runs BEFORE the
+    // switch so enterBusyTurn's buffer clear precedes this event's content. Inert unless
+    // SELF_HOOK is driving (hookActive); never fires on a live busy/awaiting turn.
+    if (e.t === "prompt" || e.t === "say" || e.t === "tool" || e.t === "toolResult") {
+      this.lastContentMs = Date.now();
+      if (
+        backstopOnContent({
+          hookActive: this.hookActive,
+          appState: this.state,
+          turnHookDriven: this.turnHookDriven,
+          idlePending: this.idleTimer !== null,
+        }) === "busy"
+      ) {
+        this.turnHookDriven = false; // backstop-opened — quiescence may close it
+        console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);
+        this.applyTurnStatus("busy");
+      }
+    }
     switch (e.t) {
       case "prompt": {
         const text = e.text.trim();
@@ -714,6 +759,7 @@ export class PaneBridge {
       }
       // busy/idle (closeError closes like idle — the debounce still applies).
       const next: AppState = effect.status === "busy" ? "busy" : "idle";
+      if (next === "busy") this.turnHookDriven = true; // hook owns this turn's close (its Stop)
       console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
       this.applyTurnStatus(next);
     }
