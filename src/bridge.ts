@@ -374,10 +374,17 @@ export class PaneBridge {
   noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
     if (this.disposed || !id) return;
     if (source === "mux" && this.hookSessionKnown) return; // hook owns the session once known
-    // A report of the CURRENT tail is a no-op — and must NOT clear a pending move to a
-    // different id (a stale same-old-id snapshot must not strand the retry; the pending
-    // target is cleared only when actually reached, here or in the poll retry).
-    if (this.onTranscript && id === this.agentSessionId) return;
+    // A report of the CURRENT tail is a no-op for the tail itself. A stale mux snapshot must
+    // NOT clear a pending move (it may just be lagging); but an AUTHORITATIVE hook report that
+    // the session is back on the current tail means a still-unresolved pending target is
+    // abandoned (a double-flip abc→def→abc) — drop it, else the poll would retarget to the
+    // dead `def` the moment its jsonl appears.
+    if (this.onTranscript && id === this.agentSessionId) {
+      if (source === "hook" && this.pendingSessionId && this.pendingSessionId !== id) {
+        this.pendingSessionId = null;
+      }
+      return;
+    }
     const wasTailing = this.onTranscript;
     if (this.upgradeToTranscript(id)) {
       this.pendingSessionId = null;
@@ -441,6 +448,11 @@ export class PaneBridge {
       this.polling = true;
       tl.poll()
         .then((events) => {
+          // A session change can swap `this.timeline` while this poll was in flight.
+          // dispose() is a no-op, so the old tail can still resolve with old-session
+          // events (a /clear or resume appended to the old jsonl during the read) —
+          // drop them, else we'd emit stale text/tool bubbles after retargeting.
+          if (this.timeline !== tl) return;
           for (const ev of events) this.onAgentEvent(ev);
         })
         .catch(() => {
