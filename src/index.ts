@@ -504,8 +504,10 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
   }
 
-  // Stage 1: receive self-hook reports and log them (not yet wired to the bridge).
+  // Receive self-hook reports. With SELF_HOOK=1 (Stage 3) they drive the matching
+  // bridge's status/session via the per-pane cutover; off by default (log-only).
   // Install with `pnpm start hook-install`; remove with `hook-uninstall`.
+  const selfHook = process.env.SELF_HOOK === "1";
   try {
     await startHookEndpoint((r) => {
       const extra = [
@@ -515,8 +517,15 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
       ].filter(Boolean).join(" ");
       const pane = r.paneId || `pid:${r.pid ?? "?"}`;
       console.log(`  [hook] ${r.mux}/${pane} ${r.agent} ${r.event} seq=${r.seq}${extra ? " " + extra : ""}`);
+      if (selfHook && r.paneId) {
+        // Env-primary routing: r.paneId == the mux paneId. (pid fallback for env-less
+        // reports + reconciliation land in Stage 3b.)
+        getBridge(r.paneId)?.onHookReport(r);
+      }
     });
-    console.log(`  Hooks    : ${hookSocketPath()} (self-hook reports; log-only)`);
+    console.log(
+      `  Hooks    : ${hookSocketPath()} (${selfHook ? "SELF_HOOK on — driving bridges" : "log-only; SELF_HOOK=1 to drive"})`,
+    );
   } catch (err) {
     console.error(`  Hooks    : disabled — ${(err as Error).message}`);
   }

@@ -11,6 +11,8 @@ import { logEvent, tracesStream } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcript.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
+import { HookTurnTracker } from "./hook-fsm.js";
+import type { HookReport } from "./hook-report.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
 import { renderForGlasses } from "./render.js";
@@ -201,6 +203,14 @@ export class PaneBridge {
   private turnStartMs = 0;
   private currentMenu: (ParsedMenu & ClassifiedMenu) | null = null;
   private disposed = false;
+
+  // Stage 3 self-hook wiring (docs/HOOK-MIGRATION.md). `hookActive` is the per-pane
+  // cutover gate: false until this pane's own hook is first observed, after which mux
+  // busy/idle/session are ignored (the `closed` signal is still honored). Only ever
+  // set when the SELF_HOOK flag routes reports here, so it stays false — and behaviour
+  // is unchanged — by default.
+  private readonly hookTracker = new HookTurnTracker();
+  private hookActive = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -497,13 +507,23 @@ export class PaneBridge {
       this.dispose();
       return;
     }
+    // Per-pane cutover: once this pane's own hook drives status/session, ignore the
+    // mux's busy/idle/session (the `closed` signal above is still honored — hooks
+    // don't fire on pane close). Off by default: hookActive stays false unless the
+    // SELF_HOOK flag routes hook reports to this bridge.
+    if (this.hookActive) return;
     // The backend hands us the session id on the same event that reveals it
     // (herdr's status event, cmux's SessionStart-refreshed maps) — upgrade to the
     // transcript here instead of polling for it.
     if (session) this.noteSessionId(session);
     const next = toAppState(raw);
     console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (mux: ${raw})`);
+    this.applyTurnStatus(next);
+  }
 
+  /** Drive the turn machine to `next` — shared by the mux status path (onStatus) and
+   *  the self-hook path (onHookReport). */
+  private applyTurnStatus(next: AppState): void {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
       // between tool operations, not a real turn end.
@@ -533,6 +553,27 @@ export class PaneBridge {
     // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
     // so canceling there would strand the turn as "streaming" forever.
     this.scheduleIdleClose();
+  }
+
+  /** Feed a self-hook report (Stage 3). The first report flips this pane to
+   *  hook-sourced status/session (per-pane cutover). Reports are routed here only
+   *  when SELF_HOOK is enabled; the tracker resolves out-of-order delivery. */
+  onHookReport(report: HookReport): void {
+    if (this.disposed) return;
+    const effect = this.hookTracker.apply(report);
+    if (!this.hookActive) {
+      this.hookActive = true;
+      console.log(`[bridge ${this.paneId}] self-hook cutover — status/session now from hooks`);
+    }
+    if (effect.sessionId) this.noteSessionId(effect.sessionId);
+    if (effect.status) {
+      // busy/awaiting/idle drive the turn machine; closeError (StopFailure) ends the
+      // turn like idle (the debounce still applies).
+      const next: AppState =
+        effect.status === "busy" ? "busy" : effect.status === "awaiting" ? "awaiting" : "idle";
+      console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
+      this.applyTurnStatus(next);
+    }
   }
 
   private scheduleIdleClose(): void {
