@@ -759,7 +759,10 @@ export class PaneBridge {
       }
       // busy/idle (closeError closes like idle — the debounce still applies).
       const next: AppState = effect.status === "busy" ? "busy" : "idle";
-      if (next === "busy") this.turnHookDriven = true; // hook owns this turn's close (its Stop)
+      // Mark hook-driven only when the hook OPENS the turn (idle → busy). A later busy hook
+      // (e.g. a mid-turn PreToolUse) on a turn the BACKSTOP already opened must not flip
+      // ownership — else a dropped Stop on it would leave quiescence unable to close it.
+      if (next === "busy" && this.state !== "busy") this.turnHookDriven = true;
       console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
       this.applyTurnStatus(next);
     }
