@@ -192,10 +192,11 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
-  // A session change whose new jsonl wasn't discoverable yet — the poll retries the
-  // retarget until the file appears. Needed because the tracker surfaces a session id
-  // only once (on change), so there is no second noteSessionId to drive the retry.
-  private pendingRetargetId: string | null = null;
+  // A session id we want to tail but whose jsonl wasn't discoverable at the last
+  // attempt (an initial upgrade OR a change retarget) — the poll retries it until the
+  // file appears. Needed because the tracker surfaces a session id only once (on
+  // change), so there is no second noteSessionId to drive the retry.
+  private pendingSessionId: string | null = null;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
@@ -349,39 +350,32 @@ export class PaneBridge {
    *  end (no history replay) and swaps only when the file exists — a not-yet-written
    *  jsonl leaves the current tail intact and a later tick retries.
    *
-   *  `source` gates who may RETARGET an existing tail after the self-hook cutover:
-   *  session is hook-owned then (same as status), so once we are already tailing, a
-   *  `mux`-sourced id — a `/sessions`/`/info` refresh or poll re-fetch carrying the mux's
-   *  LAGGING snapshot — is ignored, else it could retarget the tail *backwards* to the
-   *  old jsonl (the tracker surfaces the new id only once, so nothing would correct it).
-   *  The block is scoped to `onTranscript`: with no transcript yet, the mux may still
-   *  drive the INITIAL upgrade even post-cutover (a first hook can carry the id before
-   *  its jsonl exists, and the poll's mux re-fetch is then the retry). Before cutover
-   *  (and on the default path, where `hookActive` is always false) the mux drives it. */
+   *  `source` gates who owns the session AFTER the self-hook cutover: session is
+   *  hook-owned then (same as status), for BOTH the initial upgrade and later retargets.
+   *  So once `hookActive`, a `mux`-sourced id — a `/sessions`/`/info` refresh or poll
+   *  re-fetch carrying the mux's LAGGING snapshot — is ignored entirely; otherwise a
+   *  stale previous/resume id (whose jsonl still exists) could establish or retarget the
+   *  tail to the WRONG jsonl, and since the tracker surfaces the hook's id only once,
+   *  nothing would correct it. A hook id whose jsonl isn't written yet is remembered in
+   *  `pendingSessionId` and retried by the poll with the HOOK id (never a mux fallback).
+   *  Before cutover (and on the default path, where `hookActive` is always false) the mux
+   *  drives the session as before. */
   noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
     if (this.disposed || !id) return;
-    // Post-cutover, a stale mux id must not retarget AWAY from a good transcript; but
-    // while we have none, any id (mux included) may still establish the initial tail.
-    if (source === "mux" && this.hookActive && this.onTranscript) return;
-    if (this.onTranscript) {
-      // A report of the CURRENT session is a no-op — and must NOT clear a pending
-      // retarget: a stale snapshot (refreshAgents/poll re-fetch) can still report the
-      // old id while the mux's session metadata lags, and since the tracker surfaces a
-      // changed id only once, clearing here would strand the retry on the old jsonl.
-      // The pending target is cleared only when it is actually reached (below / in the
-      // poll retry), never by a stale old-id report.
-      if (id === this.agentSessionId) return;
-      if (this.upgradeToTranscript(id)) {
-        this.pendingRetargetId = null;
-        console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
-      } else {
-        // The new jsonl isn't discoverable yet — remember it so the poll retries the
-        // retarget until the file appears (the tracker won't re-surface this id).
-        this.pendingRetargetId = id;
-      }
-      return;
+    if (source === "mux" && this.hookActive) return; // post-cutover: session is hook-owned
+    // A report of the CURRENT tail is a no-op — and must NOT clear a pending move to a
+    // different id (a stale same-old-id snapshot must not strand the retry; the pending
+    // target is cleared only when actually reached, here or in the poll retry).
+    if (this.onTranscript && id === this.agentSessionId) return;
+    const wasTailing = this.onTranscript;
+    if (this.upgradeToTranscript(id)) {
+      this.pendingSessionId = null;
+      if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+    } else {
+      // jsonl not discoverable yet — remember it so the poll retries (the tracker won't
+      // re-surface this id). Covers both the initial upgrade and a change retarget.
+      this.pendingSessionId = id;
     }
-    this.upgradeToTranscript(id);
   }
 
   private startPolling(): void {
@@ -397,6 +391,7 @@ export class PaneBridge {
       if (
         !this.polling &&
         !this.onTranscript &&
+        !this.hookActive && // post-cutover the session is hook-owned — never mux-fetch it
         (this.agent === "claude" || this.agent === "codex") &&
         Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
       ) {
@@ -408,20 +403,21 @@ export class PaneBridge {
           })
           .catch(() => {});
       }
-      // Retarget retry: a session change reported a new jsonl before it existed. The
-      // tracker won't re-surface the id, so keep retrying (same throttle) until the
-      // file appears; the two upgrade paths are mutually exclusive on `onTranscript`.
-      if (
-        this.onTranscript &&
-        this.pendingRetargetId &&
-        Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
-      ) {
+      // Pending-session retry: a session id (initial upgrade OR change retarget) whose
+      // jsonl wasn't written yet. The tracker won't re-surface it, so keep retrying the
+      // SAME id (same throttle) until the file appears — post-cutover this is the only
+      // retry path (the mux fetch above is disabled), so it must use the hook id, never
+      // a mux fallback.
+      if (this.pendingSessionId && Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS) {
         this.lastUpgradeTryMs = Date.now();
-        if (this.pendingRetargetId === this.agentSessionId) {
-          this.pendingRetargetId = null;
-        } else if (this.upgradeToTranscript(this.pendingRetargetId)) {
-          console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
-          this.pendingRetargetId = null;
+        if (this.pendingSessionId === this.agentSessionId) {
+          this.pendingSessionId = null;
+        } else {
+          const wasTailing = this.onTranscript;
+          if (this.upgradeToTranscript(this.pendingSessionId)) {
+            if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+            this.pendingSessionId = null;
+          }
         }
       }
       const tl = this.timeline;
