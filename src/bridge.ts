@@ -398,18 +398,18 @@ export class PaneBridge {
       return;
     }
     const wasTailing = this.onTranscript;
-    // A retarget (wasTailing) is to a changed session — attach from the start so a first
-    // turn already written (a raced /clear whose jsonl exists on the immediate path) isn't
-    // skipped; an initial upgrade of an existing session attaches at EOF (no history replay).
-    if (this.upgradeToTranscript(id, wasTailing)) {
+    // Immediate path: the file already exists, so attach at EOF. For a fresh `/clear` file
+    // that is still empty this is offset 0 (the first turn is captured as it's written); for
+    // a resume target with real history EOF avoids replaying it. Only the pending path (file
+    // absent here) is an unambiguously brand-new session that must attach from the start.
+    if (this.upgradeToTranscript(id)) {
       this.pendingSessionId = null;
       if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
     } else {
       // jsonl not discoverable yet — remember it so the poll retries (the tracker won't
-      // re-surface this id). Covers both the initial upgrade and a change retarget. A
-      // retarget (wasTailing) is to a brand-new session whose file didn't exist here, so
-      // attach it from the START when it appears; an initial upgrade is an existing
-      // session — attach at EOF to skip its history.
+      // re-surface this id). A retarget (wasTailing) whose file was ABSENT here is a
+      // brand-new session (a resume target would already exist → immediate path), so attach
+      // it from the START when it appears; an initial upgrade is an existing session — EOF.
       this.pendingSessionId = id;
       this.pendingFromStart = wasTailing;
     }
@@ -762,6 +762,13 @@ export class PaneBridge {
     // Always invalidate an in-flight close (see turnCloseGen) — an old-tail
     // emitTurnResult() mid-await must never land on the retargeted turn.
     this.turnCloseGen++;
+    // Always drop the OLD tail's pending tools — at retarget time pendingTools holds only
+    // entries read from the abandoned tail (the new tail's tools populate fresh afterward),
+    // and a tool_start whose toolResult can never arrive from the disposed tail would
+    // otherwise describe the new session's next permission/question. Safe even for a live
+    // catch-up turn. (currentMenu is cleared only on the idle path below, so an `awaiting`
+    // live menu isn't dropped.)
+    this.pendingTools.clear();
     // Only ABANDON the turn (idle + clear) when it isn't actively live. If a turn is
     // running — busy with NO pending idle-close, or awaiting — the retarget is the
     // transcript merely catching up to the NEW session whose turn already started
@@ -782,7 +789,6 @@ export class PaneBridge {
     this.turnOutputTokens = 0;
     this.turnSuccess = true;
     this.turnResultText = "";
-    this.pendingTools.clear();
     this.currentMenu = null;
     if (this.state !== "idle") {
       this.state = "idle";
