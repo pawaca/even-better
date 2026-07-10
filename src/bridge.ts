@@ -499,25 +499,6 @@ export class PaneBridge {
    *  source-, and heuristic-agnostic — a `say` is a `say` whether it came from
    *  the jsonl or a scraped screen. */
   private onAgentEvent(e: AgentEvent): void {
-    // Quiescence backstop: real transcript activity (not usage-only) marks the pane busy.
-    // Content while we (wrongly) think idle means a hook was dropped (a missed
-    // UserPromptSubmit, or a Stop-first whole turn) — re-open the turn. Runs BEFORE the
-    // switch so enterBusyTurn's buffer clear precedes this event's content. Inert unless
-    // SELF_HOOK is driving (hookActive); never fires on a live busy/awaiting turn.
-    // Backstop: a new user turn (its transcript `prompt` event) while we think idle means the
-    // turn's start hook was missed — re-open busy. Keyed to `prompt` only: a closed turn's
-    // trailing say/tool (jsonl can lag Stop past the drain) is not a prompt, so it can't
-    // re-open a closed turn. The normal turn is then closed by its Stop; a turn with no usable
-    // close signal (both effective hooks lost, or the impossible-in-practice Stop-first order)
-    // lingers as a busy indicator by design — there is no safe time-based close (a quiet
-    // transcript is indistinguishable from silent reasoning; guessing would corrupt the
-    // transcript — see hook-backstop.ts / PR #35).
-    if (e.t === "prompt") {
-      if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
-        console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
-        this.applyTurnStatus("busy");
-      }
-    }
     switch (e.t) {
       case "prompt": {
         const text = e.text.trim();
@@ -527,6 +508,20 @@ export class PaneBridge {
         const norm = text.replace(/\s+/g, "");
         if (this.recentTyped && Date.now() - this.recentTypedAt < 120_000 && norm === this.recentTyped) {
           return;
+        }
+        // Backstop: a genuine (terminal-typed) new-turn prompt while we think idle means the
+        // turn's start hook was missed — re-open busy. Placed AFTER the duplicate check so an
+        // app-injected prompt's suppressed echo (already handled by prompt(), no user_prompt
+        // emitted for it) can't re-open a turn with no remaining close signal. Keyed to the
+        // `prompt` event only: a closed turn's trailing say/tool (jsonl can lag Stop past the
+        // drain) is not a prompt, so late tail events can't re-open a closed turn. The normal
+        // turn is closed by its Stop; a turn with no usable close signal (both effective hooks
+        // lost, or the impossible-in-practice Stop-first order) lingers as a busy indicator by
+        // design — there is no safe time-based close (a quiet transcript is indistinguishable
+        // from silent reasoning; guessing would corrupt the transcript — see hook-backstop.ts).
+        if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
+          console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
+          this.applyTurnStatus("busy");
         }
         emit(this.paneId, { type: "user_prompt", text });
         return;
