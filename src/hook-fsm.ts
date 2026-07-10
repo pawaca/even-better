@@ -107,6 +107,15 @@ export class HookTurnTracker {
     return this.status;
   }
 
+  /** Sync the tracker to `busy` when the bridge re-opened a turn via the transcript backstop
+   *  (a dropped `UserPromptSubmit` the tracker never saw). Without this the tracker's status
+   *  stays `idle`, so it would suppress the turn's later `Stop` as an unchanged status and the
+   *  bridge would never close. `lastStatusSeq` is left untouched so a genuine higher-seq close
+   *  still transitions; a stale lower-seq report can't (it never could beat the prior close). */
+  markBusy(): void {
+    this.status = "busy";
+  }
+
   /** Current session id (null until the first session-bearing report). */
   currentSession(): string | null {
     return this.sessionId;

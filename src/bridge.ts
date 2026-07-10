@@ -13,6 +13,7 @@ import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcrip
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { HookTurnTracker } from "./hook-fsm.js";
 import type { HookReport } from "./hook-report.js";
+import { backstopOnPrompt } from "./hook-backstop.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
 import { renderForGlasses } from "./render.js";
@@ -508,6 +509,29 @@ export class PaneBridge {
         if (this.recentTyped && Date.now() - this.recentTypedAt < 120_000 && norm === this.recentTyped) {
           return;
         }
+        // Backstop: a genuine (terminal-typed) new-turn prompt while we think idle means the
+        // turn's start hook was missed — re-open busy. Placed AFTER the duplicate check so an
+        // app-injected prompt's suppressed echo (already handled by prompt(), no user_prompt
+        // emitted for it) can't re-open a turn with no remaining close signal. Keyed to the
+        // `prompt` event only: a closed turn's trailing say/tool (jsonl can lag Stop past the
+        // drain) is not a prompt, so late tail events can't re-open a closed turn. The normal
+        // turn is closed by its Stop; a turn with no usable close signal (both effective hooks
+        // lost, or the impossible-in-practice Stop-first order) lingers as a busy indicator by
+        // design — there is no safe time-based close (a quiet transcript is indistinguishable
+        // from silent reasoning; guessing would corrupt the transcript — see hook-backstop.ts).
+        if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
+          console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
+          // Sync the tracker to busy: its status is still idle (it never saw the dropped
+          // UserPromptSubmit), so without this it would suppress this turn's later Stop as an
+          // unchanged idle and the bridge would never close — worst for a prose-only turn with
+          // no PreToolUse to flip the tracker first.
+          this.hookTracker.markBusy();
+          // Invalidate any in-flight close: if the prior turn's emitTurnResult() is mid-drain
+          // (state already idle, ~1.1s wait), bumping turnCloseGen makes it abort instead of
+          // emitting result/idle over this newly reopened turn (same guard as a retarget).
+          this.turnCloseGen++;
+          this.applyTurnStatus("busy");
+        }
         emit(this.paneId, { type: "user_prompt", text });
         return;
       }
@@ -642,8 +666,8 @@ export class PaneBridge {
     this.applyTurnStatus(next);
   }
 
-  /** Drive the turn machine to `next` — shared by the mux status path (onStatus) and
-   *  the self-hook path (onHookReport). */
+  /** Drive the turn machine to `next` — shared by the mux status path (onStatus), the
+   *  self-hook path (onHookReport), and the backstop busy-reopen. */
   private applyTurnStatus(next: AppState): void {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
