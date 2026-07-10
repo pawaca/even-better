@@ -242,6 +242,10 @@ export class PaneBridge {
   private turnBackstopOpened = false;
   private lastContentMs = 0;
   private idleFromBackstop = false;
+  // A turn close is draining (state is idle but emitTurnResult is in its 1.1s catch-up wait).
+  // Trailing content in that window is the closing turn's tail — the backstop must not
+  // re-open on it.
+  private closing = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -488,6 +492,7 @@ export class PaneBridge {
             appState: this.state,
             turnBackstopOpened: this.turnBackstopOpened,
             idlePending: this.idleTimer !== null,
+            closing: this.closing,
           },
           Date.now() - this.lastContentMs,
           QUIESCENCE_MS,
@@ -540,6 +545,7 @@ export class PaneBridge {
           appState: this.state,
           turnBackstopOpened: this.turnBackstopOpened,
           idlePending: this.idleTimer !== null,
+          closing: this.closing,
         }) === "busy"
       ) {
         console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);
@@ -788,14 +794,21 @@ export class PaneBridge {
       }
       this.state = "idle";
       this.stopStats();
-      void this.emitTurnResult();
+      // `closing` blocks a backstop re-open on this turn's trailing content during the
+      // 1.1s drain; the finally clears it however emitTurnResult exits.
+      this.closing = true;
+      void this.emitTurnResult().finally(() => {
+        this.closing = false;
+      });
     }, IDLE_GRACE_MS);
   }
 
   private enterBusyTurn(): void {
-    // Any NORMAL open (hook / app prompt / mux) is not backstop-owned, so quiescence won't
-    // close it — only the backstop re-tags true right after opening via content.
-    this.turnBackstopOpened = false;
+    // Clear backstop ownership only on a FRESH open from idle (this.state is still the prior
+    // value here). A resume from `awaiting` is the SAME turn — keep its tag, else a dropped
+    // Stop on a backstop-opened turn that passed through a menu would never close. A normal
+    // idle→busy open is not backstop-owned; the backstop re-tags true right after its own open.
+    if (this.state === "idle") this.turnBackstopOpened = false;
     if (!this.turnStartMs) this.turnStartMs = Date.now();
     this.idleCanceledForAwaiting = false;
     this.screen?.resetTurn(); // new turn — allow repeats of past content

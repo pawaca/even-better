@@ -23,6 +23,10 @@ export interface BackstopState {
   turnBackstopOpened: boolean;
   /** An idle-grace close is already scheduled — don't stack another. */
   idlePending: boolean;
+  /** A turn close is in progress: `state` has flipped to idle but `emitTurnResult` is still
+   *  draining its final text (a ~1.1s transcript catch-up wait). Content during that window
+   *  is the CLOSING turn's tail, not a new turn — so the backstop must not re-open on it. */
+  closing: boolean;
 }
 
 /** How long the transcript must stay quiet before the backstop closes a turn NO hook
@@ -35,9 +39,9 @@ export const QUIESCENCE_MS = 30_000;
  *  Only from a settled idle on the self-hook path — content while idle means the
  *  `UserPromptSubmit` (or a Stop-first whole turn) was dropped. Never touches a live
  *  busy/awaiting, so it can't disturb a normal hook-driven turn (which goes busy before
- *  its content arrives). */
+ *  its content arrives), nor while a close is still draining its final text (`closing`). */
 export function backstopOnContent(s: BackstopState): "busy" | null {
-  return s.hookActive && s.appState === "idle" ? "busy" : null;
+  return s.hookActive && s.appState === "idle" && !s.closing ? "busy" : null;
 }
 
 /** On a periodic tick: should the backstop close a turn the hooks left open? Only a

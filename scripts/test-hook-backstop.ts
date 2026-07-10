@@ -8,6 +8,7 @@ const st = (o: Partial<BackstopState> = {}): BackstopState => ({
   appState: "idle",
   turnBackstopOpened: true,
   idlePending: false,
+  closing: false,
   ...o,
 });
 
@@ -22,6 +23,12 @@ test("backstopOnContent: inert off the self-hook path", () => {
 test("backstopOnContent: never disturbs a live busy/awaiting turn", () => {
   assert.equal(backstopOnContent(st({ appState: "busy" })), null);
   assert.equal(backstopOnContent(st({ appState: "awaiting" })), null);
+});
+
+test("backstopOnContent: doesn't re-open while a close is still draining", () => {
+  // state flips to idle before emitTurnResult's 1.1s drain — trailing content in that window
+  // is the closing turn's tail, not a new turn.
+  assert.equal(backstopOnContent(st({ appState: "idle", closing: true })), null);
 });
 
 test("backstopOnQuiescence: closes a backstop-opened busy turn after the window", () => {
