@@ -199,6 +199,11 @@ export class PaneBridge {
   private pendingSessionId: string | null = null;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
+  // Separate throttle for the pending-session retry so it is never starved by the mux
+  // re-fetch above (they would otherwise share one timestamp and the re-fetch, running
+  // first each tick, would skip the pending retry — a known id would never be retried
+  // if getMux().sessionId() went briefly unavailable).
+  private lastPendingTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private idleCanceledForAwaiting = false;
@@ -408,8 +413,8 @@ export class PaneBridge {
       // SAME id (same throttle) until the file appears — post-cutover this is the only
       // retry path (the mux fetch above is disabled), so it must use the hook id, never
       // a mux fallback.
-      if (this.pendingSessionId && Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS) {
-        this.lastUpgradeTryMs = Date.now();
+      if (this.pendingSessionId && Date.now() - this.lastPendingTryMs >= TRANSCRIPT_RETRY_MS) {
+        this.lastPendingTryMs = Date.now();
         if (this.pendingSessionId === this.agentSessionId) {
           this.pendingSessionId = null;
         } else {
