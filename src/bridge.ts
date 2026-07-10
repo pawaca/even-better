@@ -203,11 +203,6 @@ export class PaneBridge {
   // by the time the poll finds it the first turn may already be written and EOF-attaching
   // would skip it. False for an initial upgrade (an existing session — skip its history).
   private pendingFromStart = false;
-  // True while the first poll batch after a `fromStart` attach is replaying an existing
-  // jsonl's history (a switched session whose already-completed turns are read from byte 0).
-  // The backstop must not re-open busy on those REPLAYED prompts — their turns already ran
-  // and closed via hooks — so it's suppressed until that batch drains.
-  private replaying = false;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
   // Separate throttle for the pending-session retry so it is never starved by the mux
@@ -321,7 +316,6 @@ export class PaneBridge {
       // swap so a retarget doesn't leak the old tail.
       const outgoing = this.timeline;
       if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
-      this.replaying = fromStart; // a from-start attach replays history — suppress the backstop
       this.agentSessionId = id;
       this.timeline = new TranscriptTimeline(file, fromStart);
       this.screen = null;
@@ -335,7 +329,6 @@ export class PaneBridge {
       if (!file) return false;
       const outgoing = this.timeline;
       if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
-      this.replaying = fromStart; // a from-start attach replays history — suppress the backstop
       this.agentSessionId = id;
       this.timeline = new CodexTranscriptTimeline(file, fromStart);
       this.screen = null;
@@ -486,9 +479,6 @@ export class PaneBridge {
           // drop them, else we'd emit stale text/tool bubbles after retargeting.
           if (this.timeline !== tl) return;
           for (const ev of events) this.onAgentEvent(ev);
-          // The first batch after a from-start attach was the history replay; live events
-          // (real new turns) follow, so re-enable the backstop.
-          this.replaying = false;
         })
         .catch(() => {
           // transient read/parse error; next tick retries
@@ -529,7 +519,7 @@ export class PaneBridge {
         // lost, or the impossible-in-practice Stop-first order) lingers as a busy indicator by
         // design — there is no safe time-based close (a quiet transcript is indistinguishable
         // from silent reasoning; guessing would corrupt the transcript — see hook-backstop.ts).
-        if (!this.replaying && backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
+        if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
           console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
           // Sync the tracker to busy: its status is still idle (it never saw the dropped
           // UserPromptSubmit), so without this it would suppress this turn's later Stop as an
