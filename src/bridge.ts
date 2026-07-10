@@ -221,6 +221,11 @@ export class PaneBridge {
   // is unchanged — by default.
   private readonly hookTracker = new HookTurnTracker();
   private hookActive = false;
+  // Set once a hook has carried a main-session id. SESSION/transcript sourcing switches
+  // to hook-owned only then — NOT merely when `hookActive` flips: a session-less hook (an
+  // ignored SubagentStop, or a status-only hook) can flip `hookActive` while we still need
+  // the mux fallback to resolve the transcript in the pre-transcript window.
+  private hookSessionKnown = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -355,19 +360,20 @@ export class PaneBridge {
    *  end (no history replay) and swaps only when the file exists — a not-yet-written
    *  jsonl leaves the current tail intact and a later tick retries.
    *
-   *  `source` gates who owns the session AFTER the self-hook cutover: session is
-   *  hook-owned then (same as status), for BOTH the initial upgrade and later retargets.
-   *  So once `hookActive`, a `mux`-sourced id — a `/sessions`/`/info` refresh or poll
-   *  re-fetch carrying the mux's LAGGING snapshot — is ignored entirely; otherwise a
-   *  stale previous/resume id (whose jsonl still exists) could establish or retarget the
-   *  tail to the WRONG jsonl, and since the tracker surfaces the hook's id only once,
-   *  nothing would correct it. A hook id whose jsonl isn't written yet is remembered in
-   *  `pendingSessionId` and retried by the poll with the HOOK id (never a mux fallback).
-   *  Before cutover (and on the default path, where `hookActive` is always false) the mux
-   *  drives the session as before. */
+   *  `source` gates who owns the session once a HOOK session id is known (`hookSessionKnown`):
+   *  session is hook-owned then, for BOTH the initial upgrade and later retargets. So a
+   *  `mux`-sourced id — a `/sessions`/`/info` refresh or poll re-fetch carrying the mux's
+   *  LAGGING snapshot — is ignored entirely; otherwise a stale previous/resume id (whose
+   *  jsonl still exists) could establish or retarget the tail to the WRONG jsonl, and since
+   *  the tracker surfaces the hook's id only once, nothing would correct it. A hook id whose
+   *  jsonl isn't written yet is remembered in `pendingSessionId` and retried by the poll with
+   *  the HOOK id (never a mux fallback). The gate is `hookSessionKnown`, not `hookActive`:
+   *  until a hook actually carries a session (a session-less SubagentStop can flip hookActive)
+   *  the mux is still the best source. On the default path `hookSessionKnown` is always false,
+   *  so the mux drives the session as before. */
   noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
     if (this.disposed || !id) return;
-    if (source === "mux" && this.hookActive) return; // post-cutover: session is hook-owned
+    if (source === "mux" && this.hookSessionKnown) return; // hook owns the session once known
     // A report of the CURRENT tail is a no-op — and must NOT clear a pending move to a
     // different id (a stale same-old-id snapshot must not strand the retry; the pending
     // target is cleared only when actually reached, here or in the poll retry).
@@ -396,7 +402,7 @@ export class PaneBridge {
       if (
         !this.polling &&
         !this.onTranscript &&
-        !this.hookActive && // post-cutover the session is hook-owned — never mux-fetch it
+        !this.hookSessionKnown && // once a hook session is known it owns it — don't mux-fetch
         (this.agent === "claude" || this.agent === "codex") &&
         Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
       ) {
@@ -418,8 +424,8 @@ export class PaneBridge {
         // Only skip-clear when we are ACTUALLY tailing that id. agentSessionId is seeded
         // from the discovered info.sessionId at construction, so it can equal the pending
         // id while onTranscript is still false (jsonl not found yet) — clearing then would
-        // drop the only retry (the mux re-fetch is off once hookActive), leaving the pane
-        // blank. Otherwise try the upgrade until the file appears.
+        // drop the only retry (the mux re-fetch is off once a hook session is known),
+        // leaving the pane blank. Otherwise try the upgrade until the file appears.
         if (this.onTranscript && this.pendingSessionId === this.agentSessionId) {
           this.pendingSessionId = null;
         } else {
@@ -651,7 +657,10 @@ export class PaneBridge {
       this.hookActive = true;
       console.log(`[bridge ${this.paneId}] self-hook cutover — status/session now from hooks`);
     }
-    if (effect.sessionId) this.noteSessionId(effect.sessionId, "hook");
+    if (effect.sessionId) {
+      this.hookSessionKnown = true; // now the hook owns the session; drop the mux fallback
+      this.noteSessionId(effect.sessionId, "hook");
+    }
     if (effect.status) {
       // Awaiting is NOT hook-driven. A hook PermissionRequest / interactive PreToolUse
       // is only a *candidate* — another hook can allow/deny before any TUI menu is
