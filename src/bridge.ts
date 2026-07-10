@@ -730,11 +730,15 @@ export class PaneBridge {
   }
 
   /** A `/clear` or resume retargeted the tail mid-flight — abandon the previous turn's
-   *  pending state so it can't bleed into the newly tailed session. Chiefly: cancel a
-   *  pending idle-close (else its `emitTurnResult()` would flush the OLD session's final
-   *  answer into the new one) and drop any paced/queued output; also reset the per-turn
-   *  accounting. The next `UserPromptSubmit` opens a clean turn via `enterBusyTurn`. State
-   *  is left to the status machine (hook/mux) — we only clear what would leak content. */
+   *  pending state so it can't bleed into the newly tailed session. Cancel a pending
+   *  idle-close (else its `emitTurnResult()` would flush the OLD session's final answer
+   *  into the new one), drop any paced/queued output, clear the per-turn accounting and
+   *  the abandoned tool/menu state (a `tool_start` whose result can never arrive from the
+   *  disposed tail would otherwise describe the next permission/question), and commit
+   *  `idle`: the retarget's `SessionStart` carries no status and post-cutover mux idle is
+   *  ignored, so nothing else would move us off the old turn's `busy`/`awaiting`. The new
+   *  session starts idle until its first `UserPromptSubmit` (which opens a clean turn via
+   *  `enterBusyTurn`); no `result` is emitted, so the abandoned answer never surfaces. */
   private resetTurnStateForRetarget(): void {
     this.cancelIdle();
     this.idleCanceledForAwaiting = false;
@@ -746,6 +750,12 @@ export class PaneBridge {
     this.turnOutputTokens = 0;
     this.turnSuccess = true;
     this.turnResultText = "";
+    this.pendingTools.clear();
+    this.currentMenu = null;
+    if (this.state !== "idle") {
+      this.state = "idle";
+      emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
+    }
   }
 
   private finishIgnoredBlocker(explain: Explanation): void {
