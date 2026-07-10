@@ -509,12 +509,17 @@ export class PaneBridge {
     }
     // Per-pane cutover: once this pane's own hook drives status/session, ignore the
     // mux's busy/idle/session. Still honored: `closed` (above — hooks don't fire on
-    // pane close), and the codex screen-approval signal. codex exec/apply_patch
-    // approvals in a plain TUI are screen-only (no PermissionRequest hook fires), so
-    // CmuxMultiplexer's screen poll is their sole trigger — enter `awaiting` on it,
-    // and while awaiting from that poll, let the mux drive the *clear* (busy/idle once
-    // the menu is answered), else a long approved command stays stuck awaiting. Off by
-    // default (hookActive stays false unless SELF_HOOK routes reports here).
+    // pane close), and the mux's INTERACTION signal. Awaiting/permissions stay
+    // mux+screen-sourced by design — hooks own busy/idle only (docs/HOOK-MIGRATION.md;
+    // the CLAUDE.md interaction-layer invariant). The mux raises `awaiting` ONLY from a
+    // confirmed, visible blocker — cmux's PermissionRequest/AskUserQuestion
+    // routeInteraction and the codex approval screen-poll, herdr's classifier — so
+    // accepting every mux `awaiting` here is the single, menu-confirmed source (a hook
+    // PermissionRequest is only a *candidate* that another hook may allow/deny before
+    // any menu is drawn, which is why onHookReport does NOT drive awaiting). While
+    // awaiting, also let the mux drive the *clear* (busy/idle once the menu is
+    // answered), else a long approved command stays stuck awaiting. Off by default
+    // (hookActive stays false unless SELF_HOOK routes reports here).
     if (this.hookActive) {
       const next = toAppState(raw);
       if (next === "awaiting" || this.state === "awaiting") this.applyTurnStatus(next);
@@ -582,16 +587,22 @@ export class PaneBridge {
     }
     if (effect.sessionId) this.noteSessionId(effect.sessionId);
     if (effect.status) {
+      // Awaiting is NOT hook-driven. A hook PermissionRequest / interactive PreToolUse
+      // is only a *candidate* — another hook can allow/deny before any TUI menu is
+      // drawn, so committing `awaiting` here would strand the pane in awaiting with no
+      // answerable menu (and it double-sources with the mux, which reports the SAME
+      // claude PermissionRequest). Per the interaction-layer invariant the mux+screen
+      // own awaiting from a confirmed visible blocker (onStatus honors it through the
+      // cutover); hooks own busy/idle/closeError only.
+      if (effect.status === "awaiting") return;
       if (effect.status === "closeError") {
         // StopFailure — the turn ended on an API error. Record it as failed before
         // closing, else emitTurnResult would report the API-error turn as successful.
         this.turnSuccess = false;
         if (!this.turnResultText) this.turnResultText = "Turn ended on an API error.";
       }
-      // busy/awaiting/idle drive the turn machine; closeError closes like idle
-      // (the debounce still applies).
-      const next: AppState =
-        effect.status === "busy" ? "busy" : effect.status === "awaiting" ? "awaiting" : "idle";
+      // busy/idle (closeError closes like idle — the debounce still applies).
+      const next: AppState = effect.status === "busy" ? "busy" : "idle";
       console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
       this.applyTurnStatus(next);
     }
