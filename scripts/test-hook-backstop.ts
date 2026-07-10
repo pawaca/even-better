@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backstopOnContent, backstopOnQuiescence, QUIESCENCE_MS } from "../src/hook-backstop.js";
+import { backstopOnContent } from "../src/hook-backstop.js";
 import type { BackstopState } from "../src/hook-backstop.js";
 
 const st = (o: Partial<BackstopState> = {}): BackstopState => ({
   hookActive: true,
   appState: "idle",
-  turnBackstopOpened: true,
-  idlePending: false,
   closing: false,
-  toolsPending: false,
   ...o,
 });
 
@@ -30,41 +27,4 @@ test("backstopOnContent: doesn't re-open while a close is still draining", () =>
   // state flips to idle before emitTurnResult's 1.1s drain — trailing content in that window
   // is the closing turn's tail, not a new turn.
   assert.equal(backstopOnContent(st({ appState: "idle", closing: true })), null);
-});
-
-test("backstopOnQuiescence: closes a backstop-opened busy turn after the window", () => {
-  assert.equal(backstopOnQuiescence(st({ appState: "busy" }), QUIESCENCE_MS + 1), "idle");
-});
-
-test("backstopOnQuiescence: waits for sustained quiescence", () => {
-  assert.equal(backstopOnQuiescence(st({ appState: "busy" }), QUIESCENCE_MS - 1), null);
-  assert.equal(backstopOnQuiescence(st({ appState: "busy" }), 0), null);
-});
-
-test("backstopOnQuiescence: never closes a normally opened turn (hook/app/mux)", () => {
-  assert.equal(
-    backstopOnQuiescence(st({ appState: "busy", turnBackstopOpened: false }), QUIESCENCE_MS * 10),
-    null,
-  );
-});
-
-test("backstopOnQuiescence: defers while a tool is still running", () => {
-  // a long Bash produces no transcript activity while it runs — time alone looks quiescent
-  assert.equal(
-    backstopOnQuiescence(st({ appState: "busy", toolsPending: true }), QUIESCENCE_MS * 10),
-    null,
-  );
-});
-
-test("backstopOnQuiescence: doesn't stack on an already-pending idle close", () => {
-  assert.equal(
-    backstopOnQuiescence(st({ appState: "busy", idlePending: true }), QUIESCENCE_MS + 1),
-    null,
-  );
-});
-
-test("backstopOnQuiescence: inert off the self-hook path and when not busy", () => {
-  assert.equal(backstopOnQuiescence(st({ appState: "busy", hookActive: false }), QUIESCENCE_MS * 10), null);
-  assert.equal(backstopOnQuiescence(st({ appState: "idle" }), QUIESCENCE_MS * 10), null);
-  assert.equal(backstopOnQuiescence(st({ appState: "awaiting" }), QUIESCENCE_MS * 10), null);
 });
