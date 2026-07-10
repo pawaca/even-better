@@ -1,15 +1,20 @@
 // Stage 3b of docs/HOOK-MIGRATION.md: the CONSERVATIVE transcript-quiescence backstop —
-// SAFE HALF ONLY. A self-hook is normally reliable (synchronous local socket), but can be
-// missed if even-better restarts mid-turn or a turn ends without firing `Stop`. This backstop
-// recovers the one such case it can detect WITHOUT guessing:
-//   - a dropped `UserPromptSubmit` / a whole turn delivered `Stop`-first: the transcript shows
-//     new content while we wrongly think idle → re-open busy.
-// The mirror case — closing a turn whose `Stop` was dropped — was deliberately NOT built:
+// SAFE HALF ONLY. A self-hook is normally reliable (synchronous local socket), but a turn's
+// start hook can be missed (even-better restarts, or a turn's `UserPromptSubmit` is dropped).
+// This backstop recovers that one case WITHOUT guessing:
+//   - the transcript shows a new turn's USER PROMPT while we think idle → re-open busy.
+// It keys strictly off the `prompt` event, not any content, because a new turn always begins
+// with the user's prompt in the transcript, whereas the trailing `say`/`tool` of a
+// just-closed turn (jsonl can lag the `Stop` hook by more than the close drain) is NOT a
+// prompt — so late tail events can't re-open a closed turn (PR #35 review).
+//
+// The mirror case — closing a turn whose `Stop` was dropped — is deliberately NOT built:
 // there is no safe signal for it. A quiet transcript can't distinguish "turn finished" from
-// "model reasoning silently", so any time-based close would fire mid-thought and land the late
-// answer in a new turn, corrupting the app transcript (see PR #35 review). A dropped `Stop`
-// therefore lingers as a harmless busy indicator until the next real signal, rather than risking
-// corruption. Pure so the policy is unit-tested without a running agent.
+// "model reasoning silently", so any time-based close would fire mid-thought and land the
+// late answer in a new turn, corrupting the app transcript. A dropped `Stop` therefore
+// lingers as a harmless busy indicator until the next real signal. (Recovering a turn that
+// was already RUNNING when even-better attached is the startup snapshot's job, not this.)
+// Pure so the policy is unit-tested without a running agent.
 
 /** The minimal bridge state the backstop policy reads. */
 export interface BackstopState {
@@ -18,17 +23,13 @@ export interface BackstopState {
   hookActive: boolean;
   /** The bridge's current app state. */
   appState: "idle" | "busy" | "awaiting";
-  /** A turn close is in progress: `state` has flipped to idle but `emitTurnResult` is still
-   *  draining its final text (a ~1.1s transcript catch-up wait). Content during that window
-   *  is the CLOSING turn's tail, not a new turn — so the backstop must not re-open on it. */
-  closing: boolean;
 }
 
-/** On a transcript CONTENT event: should the backstop re-open a turn the hooks missed?
- *  Only from a settled idle on the self-hook path — content while idle means the
- *  `UserPromptSubmit` (or a Stop-first whole turn) was dropped. Never touches a live
- *  busy/awaiting (so it can't disturb a normal hook-driven turn, which goes busy before its
- *  content arrives), nor while a close is still draining its final text (`closing`). */
-export function backstopOnContent(s: BackstopState): "busy" | null {
-  return s.hookActive && s.appState === "idle" && !s.closing ? "busy" : null;
+/** On a transcript PROMPT event (a new user turn): should the backstop re-open a turn whose
+ *  start hook we missed? Only from a settled idle on the self-hook path. Never touches a live
+ *  busy/awaiting (a normal hook-driven turn goes busy before its prompt is mirrored). The
+ *  caller must invoke this ONLY for `prompt` events — trailing `say`/`tool` of a closed turn
+ *  must not re-open it. */
+export function backstopOnPrompt(s: BackstopState): "busy" | null {
+  return s.hookActive && s.appState === "idle" ? "busy" : null;
 }

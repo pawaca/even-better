@@ -13,7 +13,7 @@ import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcrip
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
 import { HookTurnTracker } from "./hook-fsm.js";
 import type { HookReport } from "./hook-report.js";
-import { backstopOnContent } from "./hook-backstop.js";
+import { backstopOnPrompt } from "./hook-backstop.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
 import { renderForGlasses } from "./render.js";
@@ -232,11 +232,6 @@ export class PaneBridge {
   // ignored SubagentStop, or a status-only hook) can flip `hookActive` while we still need
   // the mux fallback to resolve the transcript in the pre-transcript window.
   private hookSessionKnown = false;
-  // Stage 3b transcript-quiescence backstop (hook-backstop.ts), safe half only: content while
-  // we think idle re-opens busy (a dropped UserPromptSubmit / Stop-first). `closing` marks a
-  // close that is still draining (state is idle but emitTurnResult is in its 1.1s catch-up
-  // wait) so a trailing event of the closing turn doesn't spuriously re-open it.
-  private closing = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -509,21 +504,17 @@ export class PaneBridge {
     // UserPromptSubmit, or a Stop-first whole turn) — re-open the turn. Runs BEFORE the
     // switch so enterBusyTurn's buffer clear precedes this event's content. Inert unless
     // SELF_HOOK is driving (hookActive); never fires on a live busy/awaiting turn.
-    if (e.t === "prompt" || e.t === "say" || e.t === "tool" || e.t === "toolResult") {
-      if (
-        backstopOnContent({
-          hookActive: this.hookActive,
-          appState: this.state,
-          closing: this.closing,
-        }) === "busy"
-      ) {
-        // Re-open a turn whose start hook we missed. A normal turn is then closed by its
-        // Stop. The residual — a turn with NO usable close signal (both effective hooks
-        // lost, or the impossible-in-practice Stop-first ordering) — lingers as a busy
-        // indicator until the next real signal, BY DESIGN: there is no safe time-based
-        // close (a quiet transcript can't be told apart from silent reasoning, so guessing
-        // would corrupt the transcript — see hook-backstop.ts / PR #35).
-        console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);
+    // Backstop: a new user turn (its transcript `prompt` event) while we think idle means the
+    // turn's start hook was missed — re-open busy. Keyed to `prompt` only: a closed turn's
+    // trailing say/tool (jsonl can lag Stop past the drain) is not a prompt, so it can't
+    // re-open a closed turn. The normal turn is then closed by its Stop; a turn with no usable
+    // close signal (both effective hooks lost, or the impossible-in-practice Stop-first order)
+    // lingers as a busy indicator by design — there is no safe time-based close (a quiet
+    // transcript is indistinguishable from silent reasoning; guessing would corrupt the
+    // transcript — see hook-backstop.ts / PR #35).
+    if (e.t === "prompt") {
+      if (backstopOnPrompt({ hookActive: this.hookActive, appState: this.state }) === "busy") {
+        console.log(`[bridge ${this.paneId}] backstop: prompt while idle → busy`);
         this.applyTurnStatus("busy");
       }
     }
@@ -754,12 +745,7 @@ export class PaneBridge {
       this.idleTimer = null;
       this.state = "idle";
       this.stopStats();
-      // `closing` blocks a backstop re-open on this turn's trailing content during the
-      // 1.1s drain; the finally clears it however emitTurnResult exits.
-      this.closing = true;
-      void this.emitTurnResult().finally(() => {
-        this.closing = false;
-      });
+      void this.emitTurnResult();
     }, IDLE_GRACE_MS);
   }
 
