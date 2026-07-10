@@ -109,6 +109,16 @@ test("tracker: a subagent session never becomes the main session", () => {
   assert.equal(t.currentSession(), "main");
 });
 
+test("tracker: markBusy lets a later Stop close a backstop-opened prose turn", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("Stop", 100)); // previous turn closed → status idle
+  // new turn's UserPromptSubmit dropped; the bridge backstop reopened busy and synced us
+  t.markBusy();
+  assert.equal(t.current(), "busy");
+  // the turn's Stop is now a change (busy → idle), so it is emitted (not suppressed)
+  assert.equal(t.apply(rep("Stop", 200)).status, "idle");
+});
+
 test("tracker: subagent events never touch the main pane's status or transcript", () => {
   const t = new HookTurnTracker();
   t.apply(rep("UserPromptSubmit", 100, { sessionId: "main" })); // main session busy
