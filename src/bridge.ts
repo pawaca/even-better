@@ -233,6 +233,11 @@ export class PaneBridge {
   private pendingTools = new Map<string, PendingTool>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
+  // Bumped when a retarget abandons the current turn. emitTurnResult() waits ~1.1s before
+  // reading/clearing turn fields, and cancelIdle can't stop an already-fired close — so a
+  // close captures this and aborts if it changed, else the abandoned close could consume
+  // and prematurely close the NEW session's turn that started during its wait.
+  private turnCloseGen = 0;
 
   // Paced output: text types out gradually, tool_start events interleave in
   // order. Widgets bypass it; result/idle wait for it to drain.
@@ -740,6 +745,7 @@ export class PaneBridge {
    *  session starts idle until its first `UserPromptSubmit` (which opens a clean turn via
    *  `enterBusyTurn`); no `result` is emitted, so the abandoned answer never surfaces. */
   private resetTurnStateForRetarget(): void {
+    this.turnCloseGen++; // invalidate an already-fired idle close that cancelIdle can't stop
     this.cancelIdle();
     this.idleCanceledForAwaiting = false;
     this.stopStats();
@@ -957,6 +963,7 @@ export class PaneBridge {
   }
 
   private async emitTurnResult(): Promise<void> {
+    const gen = this.turnCloseGen;
     // Order matters. The herdr idle event can beat the transcript poll, so the
     // final `say` block may still be in flight as a text_delta. Drain it FIRST,
     // then emit result, then `status idle` LAST — if idle went out before the
@@ -964,6 +971,11 @@ export class PaneBridge {
     // and get stuck showing "inferring" with no closing idle.
     if (this.onTranscript) {
       await new Promise((r) => setTimeout(r, 1100));
+      // A session retarget abandoned this turn during the wait — this close is stale;
+      // aborting leaves the new session's turn fields (prose/tokens/start) and status
+      // intact instead of consuming and prematurely closing it. (No retarget ⇒ gen is
+      // unchanged ⇒ this never fires, so the default path is bit-identical.)
+      if (gen !== this.turnCloseGen) return;
     }
     // Release any paced tail before result/idle close the turn. This preserves
     // wire order without making long answers delay the terminal state.
