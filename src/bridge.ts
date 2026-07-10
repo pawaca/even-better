@@ -415,7 +415,12 @@ export class PaneBridge {
       // a mux fallback.
       if (this.pendingSessionId && Date.now() - this.lastPendingTryMs >= TRANSCRIPT_RETRY_MS) {
         this.lastPendingTryMs = Date.now();
-        if (this.pendingSessionId === this.agentSessionId) {
+        // Only skip-clear when we are ACTUALLY tailing that id. agentSessionId is seeded
+        // from the discovered info.sessionId at construction, so it can equal the pending
+        // id while onTranscript is still false (jsonl not found yet) — clearing then would
+        // drop the only retry (the mux re-fetch is off once hookActive), leaving the pane
+        // blank. Otherwise try the upgrade until the file appears.
+        if (this.onTranscript && this.pendingSessionId === this.agentSessionId) {
           this.pendingSessionId = null;
         } else {
           const wasTailing = this.onTranscript;
