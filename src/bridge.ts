@@ -11,6 +11,8 @@ import { logEvent, tracesStream } from "./log.js";
 import type { AgentEvent, Timeline } from "./spine.js";
 import { CodexTranscriptTimeline, findCodexSessionFile } from "./codex-transcript.js";
 import { findSessionFile, summarizeTool, TranscriptTimeline } from "./transcript.js";
+import { HookTurnTracker } from "./hook-fsm.js";
+import type { HookReport } from "./hook-report.js";
 import { ScreenTimeline } from "./screen-timeline.js";
 import { OutputStream } from "./output-stream.js";
 import { renderForGlasses } from "./render.js";
@@ -201,6 +203,14 @@ export class PaneBridge {
   private turnStartMs = 0;
   private currentMenu: (ParsedMenu & ClassifiedMenu) | null = null;
   private disposed = false;
+
+  // Stage 3 self-hook wiring (docs/HOOK-MIGRATION.md). `hookActive` is the per-pane
+  // cutover gate: false until this pane's own hook is first observed, after which mux
+  // busy/idle/session are ignored (the `closed` signal is still honored). Only ever
+  // set when the SELF_HOOK flag routes reports here, so it stays false — and behaviour
+  // is unchanged — by default.
+  private readonly hookTracker = new HookTurnTracker();
+  private hookActive = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -497,13 +507,36 @@ export class PaneBridge {
       this.dispose();
       return;
     }
+    // Per-pane cutover: once this pane's own hook drives status/session, ignore the
+    // mux's busy/idle/session. Still honored: `closed` (above — hooks don't fire on
+    // pane close), and the mux's INTERACTION signal. Awaiting/permissions stay
+    // mux+screen-sourced by design — hooks own busy/idle only (docs/HOOK-MIGRATION.md;
+    // the CLAUDE.md interaction-layer invariant). The mux raises `awaiting` ONLY from a
+    // confirmed, visible blocker — cmux's PermissionRequest/AskUserQuestion
+    // routeInteraction and the codex approval screen-poll, herdr's classifier — so
+    // accepting every mux `awaiting` here is the single, menu-confirmed source (a hook
+    // PermissionRequest is only a *candidate* that another hook may allow/deny before
+    // any menu is drawn, which is why onHookReport does NOT drive awaiting). While
+    // awaiting, also let the mux drive the *clear* (busy/idle once the menu is
+    // answered), else a long approved command stays stuck awaiting. Off by default
+    // (hookActive stays false unless SELF_HOOK routes reports here).
+    if (this.hookActive) {
+      const next = toAppState(raw);
+      if (next === "awaiting" || this.state === "awaiting") this.applyTurnStatus(next);
+      return;
+    }
     // The backend hands us the session id on the same event that reveals it
     // (herdr's status event, cmux's SessionStart-refreshed maps) — upgrade to the
     // transcript here instead of polling for it.
     if (session) this.noteSessionId(session);
     const next = toAppState(raw);
     console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (mux: ${raw})`);
+    this.applyTurnStatus(next);
+  }
 
+  /** Drive the turn machine to `next` — shared by the mux status path (onStatus) and
+   *  the self-hook path (onHookReport). */
+  private applyTurnStatus(next: AppState): void {
     if (next === "busy") {
       // Any working signal cancels a pending idle — that idle was just a blip
       // between tool operations, not a real turn end.
@@ -533,6 +566,46 @@ export class PaneBridge {
     // (jsonl lags herdr), and herdr sends no second idle to re-arm the timer,
     // so canceling there would strand the turn as "streaming" forever.
     this.scheduleIdleClose();
+  }
+
+  /** Feed a self-hook report (Stage 3). The first report flips this pane to
+   *  hook-sourced status/session (per-pane cutover). Reports are routed here only
+   *  when SELF_HOOK is enabled; the tracker resolves out-of-order delivery.
+   *
+   *  Scope: this path is deliberately latest-wins with no lifecycle repair. The
+   *  turn-lifecycle residuals — a whole turn delivered Stop-first (no busy blip), a
+   *  blocked `UserPromptSubmit` that never gets its `Stop` (stuck busy), and dropped
+   *  reports — are recovered not here but by Stage 3b's transcript-quiescence backstop
+   *  (new content ⇒ busy, sustained quiescence ⇒ idle/result). Keeping this path
+   *  branch-free avoids per-status latency on the common in-order case. */
+  onHookReport(report: HookReport): void {
+    if (this.disposed) return;
+    const effect = this.hookTracker.apply(report);
+    if (!this.hookActive) {
+      this.hookActive = true;
+      console.log(`[bridge ${this.paneId}] self-hook cutover — status/session now from hooks`);
+    }
+    if (effect.sessionId) this.noteSessionId(effect.sessionId);
+    if (effect.status) {
+      // Awaiting is NOT hook-driven. A hook PermissionRequest / interactive PreToolUse
+      // is only a *candidate* — another hook can allow/deny before any TUI menu is
+      // drawn, so committing `awaiting` here would strand the pane in awaiting with no
+      // answerable menu (and it double-sources with the mux, which reports the SAME
+      // claude PermissionRequest). Per the interaction-layer invariant the mux+screen
+      // own awaiting from a confirmed visible blocker (onStatus honors it through the
+      // cutover); hooks own busy/idle/closeError only.
+      if (effect.status === "awaiting") return;
+      if (effect.status === "closeError") {
+        // StopFailure — the turn ended on an API error. Record it as failed before
+        // closing, else emitTurnResult would report the API-error turn as successful.
+        this.turnSuccess = false;
+        if (!this.turnResultText) this.turnResultText = "Turn ended on an API error.";
+      }
+      // busy/idle (closeError closes like idle — the debounce still applies).
+      const next: AppState = effect.status === "busy" ? "busy" : "idle";
+      console.log(`[bridge ${this.paneId}] status ${this.state} -> ${next} (hook: ${report.event})`);
+      this.applyTurnStatus(next);
+    }
   }
 
   private scheduleIdleClose(): void {
