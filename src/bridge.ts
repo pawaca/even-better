@@ -285,10 +285,14 @@ export class PaneBridge {
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
+      // The outgoing timeline is the screen fallback (first upgrade) OR a prior
+      // transcript (a session-change retarget) — dispose it exactly once before the
+      // swap so a retarget doesn't leak the old tail.
+      const outgoing = this.timeline;
       this.agentSessionId = id;
-      this.screen?.dispose();
       this.timeline = new TranscriptTimeline(file);
       this.screen = null;
+      outgoing?.dispose();
       this.onTranscript = true;
       console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
       return true;
@@ -296,10 +300,11 @@ export class PaneBridge {
     if (this.agent === "codex") {
       const file = findCodexSessionFile(id);
       if (!file) return false;
+      const outgoing = this.timeline;
       this.agentSessionId = id;
-      this.screen?.dispose();
       this.timeline = new CodexTranscriptTimeline(file);
       this.screen = null;
+      outgoing?.dispose();
       this.onTranscript = true;
       console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}`);
       return true;
@@ -332,11 +337,21 @@ export class PaneBridge {
     }
   }
 
-  /** A session id became known — from agent.list (manager) or a status event
-   *  that carried it (multiplexer). Upgrade to the transcript if we are still on
-   *  the screen fallback; a no-op once tailing. */
+  /** A session id became known — from agent.list (manager), a status event that
+   *  carried it (multiplexer), or a self-hook report. Upgrade to the transcript if we
+   *  are still on the screen fallback. Once tailing, retarget only on a genuine session
+   *  CHANGE (a `/clear` or resume swapped the pane's jsonl) so we stop mirroring a stale
+   *  transcript; the same id is a no-op. upgradeToTranscript tails the new jsonl from its
+   *  end (no history replay) and swaps only when the file exists — a not-yet-written
+   *  jsonl leaves the current tail intact and a later tick retries. */
   noteSessionId(id: string): void {
-    if (this.onTranscript || this.disposed) return;
+    if (this.disposed || !id) return;
+    if (this.onTranscript) {
+      if (id !== this.agentSessionId && this.upgradeToTranscript(id)) {
+        console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+      }
+      return;
+    }
     this.upgradeToTranscript(id);
   }
 

@@ -72,6 +72,41 @@ test("tracker: session id + transcript path pass through from any report", () =>
   assert.equal(e.sessionId, "abc");
   assert.equal(e.transcriptPath, "/x.jsonl");
   assert.equal(e.status, undefined); // SessionStart carries no status
+  assert.equal(t.currentSession(), "abc");
+});
+
+test("tracker: an unchanged session id is surfaced once, not re-emitted", () => {
+  const t = new HookTurnTracker();
+  assert.equal(t.apply(rep("SessionStart", 10, { sessionId: "abc" })).sessionId, "abc");
+  assert.equal(t.apply(rep("UserPromptSubmit", 20, { sessionId: "abc" })).sessionId, undefined);
+  assert.equal(t.apply(rep("Stop", 30, { sessionId: "abc" })).sessionId, undefined);
+  assert.equal(t.currentSession(), "abc");
+});
+
+test("tracker: a genuine session change (higher seq) is surfaced for retarget", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 10, { sessionId: "abc" }));
+  const e = t.apply(rep("SessionStart", 20, { sessionId: "def", transcriptPath: "/def.jsonl" }));
+  assert.equal(e.sessionId, "def"); // switched — surface it
+  assert.equal(e.transcriptPath, "/def.jsonl");
+  assert.equal(t.currentSession(), "def");
+});
+
+test("tracker: a stale (lower-seq) session id does not revert the session", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 20, { sessionId: "def" }));
+  assert.equal(t.apply(rep("UserPromptSubmit", 10, { sessionId: "abc" })).sessionId, undefined);
+  assert.equal(t.currentSession(), "def");
+});
+
+test("tracker: a subagent session never becomes the main session", () => {
+  const t = new HookTurnTracker();
+  t.apply(rep("SessionStart", 10, { sessionId: "main" }));
+  assert.equal(t.apply(rep("SubagentStart", 20, { sessionId: "sub" })).sessionId, undefined);
+  assert.equal(t.currentSession(), "main");
+  // a later main-session report at higher seq still surfaces only on a real change
+  assert.equal(t.apply(rep("Stop", 30, { sessionId: "main" })).sessionId, undefined);
+  assert.equal(t.currentSession(), "main");
 });
 
 test("tracker: subagent events never touch the main pane's status or transcript", () => {

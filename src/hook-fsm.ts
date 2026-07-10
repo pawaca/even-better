@@ -55,18 +55,20 @@ export interface HookEffect {
  * `UserPromptSubmit` after `Stop` stays idle, a new-turn `UserPromptSubmit` opens the
  * turn, a `Stop` with no prior start still closes.
  *
- * Deliberately simple: it does **not** track session switches. Session id + transcript
- * path pass straight through (the bridge's `noteSessionId` is idempotent), and a rare
- * mid-stream session change — plus any transient stale-status/transcript it causes —
- * is reconciled by the bridge's periodic durable-state reconciliation (Stage 3), not
- * by elaborate seq/identity gating here. Subagent events are dropped so they never
- * drive the main pane. (A whole turn arriving Stop-first would skip a transient busy
- * indicator; the content still lands via the transcript and the Stage 3 backstop
- * re-derives busy — see the design's "residual" note.)
+ * Status AND session id are both resolved latest-wins by seq. Session id is surfaced
+ * only on a real CHANGE — first-seen, or a switch (a `/clear` or resume swapped the
+ * pane's jsonl) — so the bridge retargets its transcript tail exactly when the session
+ * actually moves; unchanged repeats and stale lower-seq reports are suppressed (a late
+ * report can't revert the session). Subagent events are dropped so they never drive the
+ * main pane. (A whole turn arriving Stop-first would skip a transient busy indicator;
+ * the content still lands via the transcript and the Stage 3b backstop re-derives busy —
+ * see the design's "residual" note.)
  */
 export class HookTurnTracker {
   private lastStatusSeq = Number.NEGATIVE_INFINITY;
   private status: HookStatus | null = null;
+  private lastSessionSeq = Number.NEGATIVE_INFINITY;
+  private sessionId: string | null = null;
 
   apply(report: HookReport): HookEffect {
     const effect: HookEffect = {};
@@ -75,9 +77,18 @@ export class HookTurnTracker {
     // (event map + herdr's note). A subagent runs under its own session id.
     if (report.event === "SubagentStart" || report.event === "SubagentStop") return effect;
 
-    // Session id + transcript path pass through (idempotent upgrade downstream).
-    if (report.sessionId) effect.sessionId = report.sessionId;
+    // Transcript path passes through (informational; the bridge resolves the file from
+    // the session id, so this never drives the tail on its own).
     if (report.transcriptPath) effect.transcriptPath = report.transcriptPath;
+
+    // Session id: latest-wins by seq, surfaced only on a real change (see class note).
+    if (report.sessionId && report.seq > this.lastSessionSeq) {
+      this.lastSessionSeq = report.seq;
+      if (report.sessionId !== this.sessionId) {
+        this.sessionId = report.sessionId;
+        effect.sessionId = report.sessionId;
+      }
+    }
 
     // Status: latest-wins by seq.
     const cls = classifyStatus(report);
@@ -94,5 +105,10 @@ export class HookTurnTracker {
   /** Current effective status (null until the first status event). */
   current(): HookStatus | null {
     return this.status;
+  }
+
+  /** Current session id (null until the first session-bearing report). */
+  currentSession(): string | null {
+    return this.sessionId;
   }
 }
