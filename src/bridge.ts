@@ -349,15 +349,20 @@ export class PaneBridge {
    *  end (no history replay) and swaps only when the file exists — a not-yet-written
    *  jsonl leaves the current tail intact and a later tick retries.
    *
-   *  `source` gates who may drive the session AFTER the self-hook cutover: session is
-   *  hook-owned then (same as status), so a `mux`-sourced id — a `/sessions`/`/info`
-   *  refresh or poll re-fetch carrying the mux's LAGGING snapshot — is ignored, else it
-   *  could retarget the tail *backwards* to the old jsonl (the tracker surfaces the new
-   *  id only once, so nothing would correct it). Before cutover (and on the default
-   *  path, where `hookActive` is always false) the mux drives the session as before. */
+   *  `source` gates who may RETARGET an existing tail after the self-hook cutover:
+   *  session is hook-owned then (same as status), so once we are already tailing, a
+   *  `mux`-sourced id — a `/sessions`/`/info` refresh or poll re-fetch carrying the mux's
+   *  LAGGING snapshot — is ignored, else it could retarget the tail *backwards* to the
+   *  old jsonl (the tracker surfaces the new id only once, so nothing would correct it).
+   *  The block is scoped to `onTranscript`: with no transcript yet, the mux may still
+   *  drive the INITIAL upgrade even post-cutover (a first hook can carry the id before
+   *  its jsonl exists, and the poll's mux re-fetch is then the retry). Before cutover
+   *  (and on the default path, where `hookActive` is always false) the mux drives it. */
   noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
     if (this.disposed || !id) return;
-    if (source === "mux" && this.hookActive) return; // post-cutover: session is hook-owned
+    // Post-cutover, a stale mux id must not retarget AWAY from a good transcript; but
+    // while we have none, any id (mux included) may still establish the initial tail.
+    if (source === "mux" && this.hookActive && this.onTranscript) return;
     if (this.onTranscript) {
       // A report of the CURRENT session is a no-op — and must NOT clear a pending
       // retarget: a stale snapshot (refreshAgents/poll re-fetch) can still report the
