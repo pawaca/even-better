@@ -347,9 +347,17 @@ export class PaneBridge {
    *  CHANGE (a `/clear` or resume swapped the pane's jsonl) so we stop mirroring a stale
    *  transcript; the same id is a no-op. upgradeToTranscript tails the new jsonl from its
    *  end (no history replay) and swaps only when the file exists — a not-yet-written
-   *  jsonl leaves the current tail intact and a later tick retries. */
-  noteSessionId(id: string): void {
+   *  jsonl leaves the current tail intact and a later tick retries.
+   *
+   *  `source` gates who may drive the session AFTER the self-hook cutover: session is
+   *  hook-owned then (same as status), so a `mux`-sourced id — a `/sessions`/`/info`
+   *  refresh or poll re-fetch carrying the mux's LAGGING snapshot — is ignored, else it
+   *  could retarget the tail *backwards* to the old jsonl (the tracker surfaces the new
+   *  id only once, so nothing would correct it). Before cutover (and on the default
+   *  path, where `hookActive` is always false) the mux drives the session as before. */
+  noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
     if (this.disposed || !id) return;
+    if (source === "mux" && this.hookActive) return; // post-cutover: session is hook-owned
     if (this.onTranscript) {
       // A report of the CURRENT session is a no-op — and must NOT clear a pending
       // retarget: a stale snapshot (refreshAgents/poll re-fetch) can still report the
@@ -632,7 +640,7 @@ export class PaneBridge {
       this.hookActive = true;
       console.log(`[bridge ${this.paneId}] self-hook cutover — status/session now from hooks`);
     }
-    if (effect.sessionId) this.noteSessionId(effect.sessionId);
+    if (effect.sessionId) this.noteSessionId(effect.sessionId, "hook");
     if (effect.status) {
       // Awaiting is NOT hook-driven. A hook PermissionRequest / interactive PreToolUse
       // is only a *candidate* — another hook can allow/deny before any TUI menu is
