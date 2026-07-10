@@ -351,10 +351,13 @@ export class PaneBridge {
   noteSessionId(id: string): void {
     if (this.disposed || !id) return;
     if (this.onTranscript) {
-      if (id === this.agentSessionId) {
-        this.pendingRetargetId = null; // already caught up
-        return;
-      }
+      // A report of the CURRENT session is a no-op — and must NOT clear a pending
+      // retarget: a stale snapshot (refreshAgents/poll re-fetch) can still report the
+      // old id while the mux's session metadata lags, and since the tracker surfaces a
+      // changed id only once, clearing here would strand the retry on the old jsonl.
+      // The pending target is cleared only when it is actually reached (below / in the
+      // poll retry), never by a stale old-id report.
+      if (id === this.agentSessionId) return;
       if (this.upgradeToTranscript(id)) {
         this.pendingRetargetId = null;
         console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
