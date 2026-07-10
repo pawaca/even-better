@@ -397,21 +397,24 @@ export class PaneBridge {
       }
       return;
     }
-    const wasTailing = this.onTranscript;
+    // A "switch" is a change to a DIFFERENT session than the one we were targeting (a new
+    // `/clear` or a resume). It can happen BEFORE onTranscript — a startup session still
+    // pending when the user `/clear`s — so key off the id changing, not `onTranscript`.
+    const isSwitch = !!this.agentSessionId && id !== this.agentSessionId;
     // Immediate path: the file already exists, so attach at EOF. For a fresh `/clear` file
     // that is still empty this is offset 0 (the first turn is captured as it's written); for
     // a resume target with real history EOF avoids replaying it. Only the pending path (file
     // absent here) is an unambiguously brand-new session that must attach from the start.
     if (this.upgradeToTranscript(id)) {
       this.pendingSessionId = null;
-      if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+      if (isSwitch) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
     } else {
       // jsonl not discoverable yet — remember it so the poll retries (the tracker won't
-      // re-surface this id). A retarget (wasTailing) whose file was ABSENT here is a
-      // brand-new session (a resume target would already exist → immediate path), so attach
-      // it from the START when it appears; an initial upgrade is an existing session — EOF.
+      // re-surface this id). A SWITCH whose file was ABSENT here is a brand-new session (a
+      // resume target would already exist → immediate/EOF), so attach it from the START when
+      // it appears; the initial existing session (not a switch) attaches at EOF.
       this.pendingSessionId = id;
-      this.pendingFromStart = wasTailing;
+      this.pendingFromStart = isSwitch;
     }
   }
 
