@@ -9,6 +9,7 @@ const st = (o: Partial<BackstopState> = {}): BackstopState => ({
   turnBackstopOpened: true,
   idlePending: false,
   closing: false,
+  toolsPending: false,
   ...o,
 });
 
@@ -43,6 +44,14 @@ test("backstopOnQuiescence: waits for sustained quiescence", () => {
 test("backstopOnQuiescence: never closes a normally opened turn (hook/app/mux)", () => {
   assert.equal(
     backstopOnQuiescence(st({ appState: "busy", turnBackstopOpened: false }), QUIESCENCE_MS * 10),
+    null,
+  );
+});
+
+test("backstopOnQuiescence: defers while a tool is still running", () => {
+  // a long Bash produces no transcript activity while it runs — time alone looks quiescent
+  assert.equal(
+    backstopOnQuiescence(st({ appState: "busy", toolsPending: true }), QUIESCENCE_MS * 10),
     null,
   );
 });

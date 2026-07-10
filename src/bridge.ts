@@ -493,6 +493,7 @@ export class PaneBridge {
             turnBackstopOpened: this.turnBackstopOpened,
             idlePending: this.idleTimer !== null,
             closing: this.closing,
+            toolsPending: this.pendingTools.size > 0,
           },
           Date.now() - this.lastContentMs,
           QUIESCENCE_MS,
@@ -546,6 +547,7 @@ export class PaneBridge {
           turnBackstopOpened: this.turnBackstopOpened,
           idlePending: this.idleTimer !== null,
           closing: this.closing,
+          toolsPending: this.pendingTools.size > 0,
         }) === "busy"
       ) {
         console.log(`[bridge ${this.paneId}] backstop: content while idle → busy`);

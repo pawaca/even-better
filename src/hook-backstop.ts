@@ -27,6 +27,10 @@ export interface BackstopState {
    *  draining its final text (a ~1.1s transcript catch-up wait). Content during that window
    *  is the CLOSING turn's tail, not a new turn — so the backstop must not re-open on it. */
   closing: boolean;
+  /** A tool is mid-run: `pendingTools` holds a `tool_start` with no matching `tool_end`.
+   *  A long tool (e.g. a 60s Bash) produces no transcript activity while it runs, so
+   *  time-since-content alone would falsely look quiescent — don't close while one is open. */
+  toolsPending: boolean;
 }
 
 /** How long the transcript must stay quiet before the backstop closes a turn NO hook
@@ -58,5 +62,6 @@ export function backstopOnQuiescence(
   if (s.appState !== "busy") return null;
   if (!s.turnBackstopOpened) return null;
   if (s.idlePending) return null;
+  if (s.toolsPending) return null; // a long tool is still running — not actually quiescent
   return msSinceContent > quiescenceMs ? "idle" : null;
 }
