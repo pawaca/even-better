@@ -398,7 +398,10 @@ export class PaneBridge {
       return;
     }
     const wasTailing = this.onTranscript;
-    if (this.upgradeToTranscript(id)) {
+    // A retarget (wasTailing) is to a changed session — attach from the start so a first
+    // turn already written (a raced /clear whose jsonl exists on the immediate path) isn't
+    // skipped; an initial upgrade of an existing session attaches at EOF (no history replay).
+    if (this.upgradeToTranscript(id, wasTailing)) {
       this.pendingSessionId = null;
       if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
     } else {
