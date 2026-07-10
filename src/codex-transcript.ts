@@ -400,8 +400,8 @@ export class CodexTranscriptTimeline implements Timeline {
   private tail: JsonlTail;
   private parser = new CodexEntryParser();
 
-  constructor(filePath: string) {
-    this.tail = new JsonlTail(filePath, (line) => this.parser.parse(line));
+  constructor(filePath: string, fromStart = false) {
+    this.tail = new JsonlTail(filePath, (line) => this.parser.parse(line), fromStart);
   }
 
   poll(): Promise<AgentEvent[]> {

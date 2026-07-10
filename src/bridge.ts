@@ -197,6 +197,11 @@ export class PaneBridge {
   // file appears. Needed because the tracker surfaces a session id only once (on
   // change), so there is no second noteSessionId to drive the retry.
   private pendingSessionId: string | null = null;
+  // Whether the pending target should attach from the START of its jsonl. True for a
+  // retarget to a brand-new session (`/clear`): the file didn't exist at report time, so
+  // by the time the poll finds it the first turn may already be written and EOF-attaching
+  // would skip it. False for an initial upgrade (an existing session — skip its history).
+  private pendingFromStart = false;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
   // Separate throttle for the pending-session retry so it is never starved by the mux
@@ -301,7 +306,7 @@ export class PaneBridge {
     this.timeline = this.screen;
   }
 
-  private upgradeToTranscript(id: string): boolean {
+  private upgradeToTranscript(id: string, fromStart = false): boolean {
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
@@ -311,11 +316,11 @@ export class PaneBridge {
       const outgoing = this.timeline;
       if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
-      this.timeline = new TranscriptTimeline(file);
+      this.timeline = new TranscriptTimeline(file, fromStart);
       this.screen = null;
       outgoing?.dispose();
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     if (this.agent === "codex") {
@@ -324,11 +329,11 @@ export class PaneBridge {
       const outgoing = this.timeline;
       if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
-      this.timeline = new CodexTranscriptTimeline(file);
+      this.timeline = new CodexTranscriptTimeline(file, fromStart);
       this.screen = null;
       outgoing?.dispose();
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     return false;
@@ -398,8 +403,12 @@ export class PaneBridge {
       if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
     } else {
       // jsonl not discoverable yet — remember it so the poll retries (the tracker won't
-      // re-surface this id). Covers both the initial upgrade and a change retarget.
+      // re-surface this id). Covers both the initial upgrade and a change retarget. A
+      // retarget (wasTailing) is to a brand-new session whose file didn't exist here, so
+      // attach it from the START when it appears; an initial upgrade is an existing
+      // session — attach at EOF to skip its history.
       this.pendingSessionId = id;
+      this.pendingFromStart = wasTailing;
     }
   }
 
@@ -444,7 +453,9 @@ export class PaneBridge {
           this.pendingSessionId = null;
         } else {
           const wasTailing = this.onTranscript;
-          if (this.upgradeToTranscript(this.pendingSessionId)) {
+          // A retarget to a brand-new session attaches from the start (see pendingFromStart)
+          // so a first turn already written before the retry isn't skipped.
+          if (this.upgradeToTranscript(this.pendingSessionId, this.pendingFromStart)) {
             if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
             this.pendingSessionId = null;
           }
