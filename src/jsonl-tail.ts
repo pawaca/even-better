@@ -6,7 +6,9 @@ export type JsonlParser = (line: string) => AgentEvent[];
 /**
  * Incremental JSONL tailer: remembers the byte offset and returns only events
  * appended since the last call. Starts at the current end of file so attaching
- * to a live session never replays its history.
+ * to a live session never replays its history — EXCEPT with `fromStart`, which
+ * begins at offset 0 to read a brand-new file whole (a `/clear`/resume session
+ * whose first turn may already be written by the time we attach).
  */
 export class JsonlTail {
   private offset: number;
@@ -15,8 +17,9 @@ export class JsonlTail {
   constructor(
     readonly filePath: string,
     private readonly parseLine: JsonlParser,
+    fromStart = false,
   ) {
-    this.offset = statSync(filePath).size;
+    this.offset = fromStart ? 0 : statSync(filePath).size;
   }
 
   async readNew(): Promise<AgentEvent[]> {

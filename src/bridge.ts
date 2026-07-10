@@ -192,8 +192,23 @@ export class PaneBridge {
   private onTranscript = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private polling = false;
+  // A session id we want to tail but whose jsonl wasn't discoverable at the last
+  // attempt (an initial upgrade OR a change retarget) — the poll retries it until the
+  // file appears. Needed because the tracker surfaces a session id only once (on
+  // change), so there is no second noteSessionId to drive the retry.
+  private pendingSessionId: string | null = null;
+  // Whether the pending target should attach from the START of its jsonl. True for a
+  // retarget to a brand-new session (`/clear`): the file didn't exist at report time, so
+  // by the time the poll finds it the first turn may already be written and EOF-attaching
+  // would skip it. False for an initial upgrade (an existing session — skip its history).
+  private pendingFromStart = false;
   // Throttle for the screen-fallback session re-fetch (see TRANSCRIPT_RETRY_MS).
   private lastUpgradeTryMs = 0;
+  // Separate throttle for the pending-session retry so it is never starved by the mux
+  // re-fetch above (they would otherwise share one timestamp and the re-fetch, running
+  // first each tick, would skip the pending retry — a known id would never be retried
+  // if getMux().sessionId() went briefly unavailable).
+  private lastPendingTryMs = 0;
   private statsTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private idleCanceledForAwaiting = false;
@@ -211,6 +226,11 @@ export class PaneBridge {
   // is unchanged — by default.
   private readonly hookTracker = new HookTurnTracker();
   private hookActive = false;
+  // Set once a hook has carried a main-session id. SESSION/transcript sourcing switches
+  // to hook-owned only then — NOT merely when `hookActive` flips: a session-less hook (an
+  // ignored SubagentStop, or a status-only hook) can flip `hookActive` while we still need
+  // the mux fallback to resolve the transcript in the pre-transcript window.
+  private hookSessionKnown = false;
 
   private lastProseBlock = "";
   private turnSuccess = true;
@@ -218,6 +238,11 @@ export class PaneBridge {
   private pendingTools = new Map<string, PendingTool>();
   private turnInputTokens = 0;
   private turnOutputTokens = 0;
+  // Bumped when a retarget abandons the current turn. emitTurnResult() waits ~1.1s before
+  // reading/clearing turn fields, and cancelIdle can't stop an already-fired close — so a
+  // close captures this and aborts if it changed, else the abandoned close could consume
+  // and prematurely close the NEW session's turn that started during its wait.
+  private turnCloseGen = 0;
 
   // Paced output: text types out gradually, tool_start events interleave in
   // order. Widgets bypass it; result/idle wait for it to drain.
@@ -281,27 +306,34 @@ export class PaneBridge {
     this.timeline = this.screen;
   }
 
-  private upgradeToTranscript(id: string): boolean {
+  private upgradeToTranscript(id: string, fromStart = false): boolean {
     if (this.agent === "claude") {
       const file = findSessionFile(id);
       if (!file) return false;
+      // The outgoing timeline is the screen fallback (first upgrade) OR a prior
+      // transcript (a session-change retarget) — dispose it exactly once before the
+      // swap so a retarget doesn't leak the old tail.
+      const outgoing = this.timeline;
+      if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
-      this.screen?.dispose();
-      this.timeline = new TranscriptTimeline(file);
+      this.timeline = new TranscriptTimeline(file, fromStart);
       this.screen = null;
+      outgoing?.dispose();
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     if (this.agent === "codex") {
       const file = findCodexSessionFile(id);
       if (!file) return false;
+      const outgoing = this.timeline;
+      if (this.onTranscript) this.resetTurnStateForRetarget(); // pre-swap: this is a retarget
       this.agentSessionId = id;
-      this.screen?.dispose();
-      this.timeline = new CodexTranscriptTimeline(file);
+      this.timeline = new CodexTranscriptTimeline(file, fromStart);
       this.screen = null;
+      outgoing?.dispose();
       this.onTranscript = true;
-      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}`);
+      console.log(`[bridge ${this.paneId}] tailing codex transcript ${file}${fromStart ? " (from start)" : ""}`);
       return true;
     }
     return false;
@@ -332,12 +364,58 @@ export class PaneBridge {
     }
   }
 
-  /** A session id became known — from agent.list (manager) or a status event
-   *  that carried it (multiplexer). Upgrade to the transcript if we are still on
-   *  the screen fallback; a no-op once tailing. */
-  noteSessionId(id: string): void {
-    if (this.onTranscript || this.disposed) return;
-    this.upgradeToTranscript(id);
+  /** A session id became known — from agent.list (manager), a status event that
+   *  carried it (multiplexer), or a self-hook report. Upgrade to the transcript if we
+   *  are still on the screen fallback. Once tailing, retarget only on a genuine session
+   *  CHANGE (a `/clear` or resume swapped the pane's jsonl) so we stop mirroring a stale
+   *  transcript; the same id is a no-op. upgradeToTranscript tails the new jsonl from its
+   *  end (no history replay) and swaps only when the file exists — a not-yet-written
+   *  jsonl leaves the current tail intact and a later tick retries.
+   *
+   *  `source` gates who owns the session once a HOOK session id is known (`hookSessionKnown`):
+   *  session is hook-owned then, for BOTH the initial upgrade and later retargets. So a
+   *  `mux`-sourced id — a `/sessions`/`/info` refresh or poll re-fetch carrying the mux's
+   *  LAGGING snapshot — is ignored entirely; otherwise a stale previous/resume id (whose
+   *  jsonl still exists) could establish or retarget the tail to the WRONG jsonl, and since
+   *  the tracker surfaces the hook's id only once, nothing would correct it. A hook id whose
+   *  jsonl isn't written yet is remembered in `pendingSessionId` and retried by the poll with
+   *  the HOOK id (never a mux fallback). The gate is `hookSessionKnown`, not `hookActive`:
+   *  until a hook actually carries a session (a session-less SubagentStop can flip hookActive)
+   *  the mux is still the best source. On the default path `hookSessionKnown` is always false,
+   *  so the mux drives the session as before. */
+  noteSessionId(id: string, source: "hook" | "mux" = "mux"): void {
+    if (this.disposed || !id) return;
+    if (source === "mux" && this.hookSessionKnown) return; // hook owns the session once known
+    // A report of the CURRENT tail is a no-op for the tail itself. A stale mux snapshot must
+    // NOT clear a pending move (it may just be lagging); but an AUTHORITATIVE hook report that
+    // the session is back on the current tail means a still-unresolved pending target is
+    // abandoned (a double-flip abc→def→abc) — drop it, else the poll would retarget to the
+    // dead `def` the moment its jsonl appears.
+    if (this.onTranscript && id === this.agentSessionId) {
+      if (source === "hook" && this.pendingSessionId && this.pendingSessionId !== id) {
+        this.pendingSessionId = null;
+      }
+      return;
+    }
+    // A "switch" is a change to a DIFFERENT session than the one we were targeting (a new
+    // `/clear` or a resume). It can happen BEFORE onTranscript — a startup session still
+    // pending when the user `/clear`s — so key off the id changing, not `onTranscript`.
+    const isSwitch = !!this.agentSessionId && id !== this.agentSessionId;
+    // Immediate path: the file already exists, so attach at EOF. For a fresh `/clear` file
+    // that is still empty this is offset 0 (the first turn is captured as it's written); for
+    // a resume target with real history EOF avoids replaying it. Only the pending path (file
+    // absent here) is an unambiguously brand-new session that must attach from the start.
+    if (this.upgradeToTranscript(id)) {
+      this.pendingSessionId = null;
+      if (isSwitch) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+    } else {
+      // jsonl not discoverable yet — remember it so the poll retries (the tracker won't
+      // re-surface this id). A SWITCH whose file was ABSENT here is a brand-new session (a
+      // resume target would already exist → immediate/EOF), so attach it from the START when
+      // it appears; the initial existing session (not a switch) attaches at EOF.
+      this.pendingSessionId = id;
+      this.pendingFromStart = isSwitch;
+    }
   }
 
   private startPolling(): void {
@@ -353,6 +431,7 @@ export class PaneBridge {
       if (
         !this.polling &&
         !this.onTranscript &&
+        !this.hookSessionKnown && // once a hook session is known it owns it — don't mux-fetch
         (this.agent === "claude" || this.agent === "codex") &&
         Date.now() - this.lastUpgradeTryMs >= TRANSCRIPT_RETRY_MS
       ) {
@@ -364,11 +443,40 @@ export class PaneBridge {
           })
           .catch(() => {});
       }
+      // Pending-session retry: a session id (initial upgrade OR change retarget) whose
+      // jsonl wasn't written yet. The tracker won't re-surface it, so keep retrying the
+      // SAME id (same throttle) until the file appears — post-cutover this is the only
+      // retry path (the mux fetch above is disabled), so it must use the hook id, never
+      // a mux fallback.
+      if (this.pendingSessionId && Date.now() - this.lastPendingTryMs >= TRANSCRIPT_RETRY_MS) {
+        this.lastPendingTryMs = Date.now();
+        // Only skip-clear when we are ACTUALLY tailing that id. agentSessionId is seeded
+        // from the discovered info.sessionId at construction, so it can equal the pending
+        // id while onTranscript is still false (jsonl not found yet) — clearing then would
+        // drop the only retry (the mux re-fetch is off once a hook session is known),
+        // leaving the pane blank. Otherwise try the upgrade until the file appears.
+        if (this.onTranscript && this.pendingSessionId === this.agentSessionId) {
+          this.pendingSessionId = null;
+        } else {
+          const wasTailing = this.onTranscript;
+          // A retarget to a brand-new session attaches from the start (see pendingFromStart)
+          // so a first turn already written before the retry isn't skipped.
+          if (this.upgradeToTranscript(this.pendingSessionId, this.pendingFromStart)) {
+            if (wasTailing) console.log(`[bridge ${this.paneId}] session changed → retargeted transcript`);
+            this.pendingSessionId = null;
+          }
+        }
+      }
       const tl = this.timeline;
       if (this.polling || !tl) return;
       this.polling = true;
       tl.poll()
         .then((events) => {
+          // A session change can swap `this.timeline` while this poll was in flight.
+          // dispose() is a no-op, so the old tail can still resolve with old-session
+          // events (a /clear or resume appended to the old jsonl during the read) —
+          // drop them, else we'd emit stale text/tool bubbles after retargeting.
+          if (this.timeline !== tl) return;
           for (const ev of events) this.onAgentEvent(ev);
         })
         .catch(() => {
@@ -585,7 +693,10 @@ export class PaneBridge {
       this.hookActive = true;
       console.log(`[bridge ${this.paneId}] self-hook cutover — status/session now from hooks`);
     }
-    if (effect.sessionId) this.noteSessionId(effect.sessionId);
+    if (effect.sessionId) {
+      this.hookSessionKnown = true; // now the hook owns the session; drop the mux fallback
+      this.noteSessionId(effect.sessionId, "hook");
+    }
     if (effect.status) {
       // Awaiting is NOT hook-driven. A hook PermissionRequest / interactive PreToolUse
       // is only a *candidate* — another hook can allow/deny before any TUI menu is
@@ -637,6 +748,54 @@ export class PaneBridge {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
+    }
+  }
+
+  /** A `/clear` or resume retargeted the tail mid-flight — abandon the previous turn's
+   *  pending state so it can't bleed into the newly tailed session. Cancel a pending
+   *  idle-close (else its `emitTurnResult()` would flush the OLD session's final answer
+   *  into the new one), drop any paced/queued output, clear the per-turn accounting and
+   *  the abandoned tool/menu state (a `tool_start` whose result can never arrive from the
+   *  disposed tail would otherwise describe the next permission/question), and commit
+   *  `idle`: the retarget's `SessionStart` carries no status and post-cutover mux idle is
+   *  ignored, so nothing else would move us off the old turn's `busy`/`awaiting`. The new
+   *  session starts idle until its first `UserPromptSubmit` (which opens a clean turn via
+   *  `enterBusyTurn`); no `result` is emitted, so the abandoned answer never surfaces. */
+  private resetTurnStateForRetarget(): void {
+    // Always invalidate an in-flight close (see turnCloseGen) — an old-tail
+    // emitTurnResult() mid-await must never land on the retargeted turn.
+    this.turnCloseGen++;
+    // Always drop the OLD tail's pending tools — at retarget time pendingTools holds only
+    // entries read from the abandoned tail (the new tail's tools populate fresh afterward),
+    // and a tool_start whose toolResult can never arrive from the disposed tail would
+    // otherwise describe the new session's next permission/question. Safe even for a live
+    // catch-up turn. (currentMenu is cleared only on the idle path below, so an `awaiting`
+    // live menu isn't dropped.)
+    this.pendingTools.clear();
+    // Only ABANDON the turn (idle + clear) when it isn't actively live. If a turn is
+    // running — busy with NO pending idle-close, or awaiting — the retarget is the
+    // transcript merely catching up to the NEW session whose turn already started
+    // (SessionStart set the pending target, then UserPromptSubmit drove busy before the
+    // jsonl appeared); clobbering it would strand that live turn's busy/result lifecycle.
+    // A session change only happens at the old session's prompt, so "busy with no pending
+    // close" is necessarily the new turn. During idle-grace state is still busy but the
+    // idle timer is set — that IS an ending turn, so it still resets.
+    const liveTurn = (this.state === "busy" && this.idleTimer === null) || this.state === "awaiting";
+    if (liveTurn) return;
+    this.cancelIdle();
+    this.idleCanceledForAwaiting = false;
+    this.stopStats();
+    this.out.clear();
+    this.lastProseBlock = "";
+    this.turnStartMs = 0;
+    this.turnInputTokens = 0;
+    this.turnOutputTokens = 0;
+    this.turnSuccess = true;
+    this.turnResultText = "";
+    this.currentMenu = null;
+    if (this.state !== "idle") {
+      this.state = "idle";
+      emit(this.paneId, { type: "status", state: "idle", sessionId: this.paneId });
     }
   }
 
@@ -839,6 +998,7 @@ export class PaneBridge {
   }
 
   private async emitTurnResult(): Promise<void> {
+    const gen = this.turnCloseGen;
     // Order matters. The herdr idle event can beat the transcript poll, so the
     // final `say` block may still be in flight as a text_delta. Drain it FIRST,
     // then emit result, then `status idle` LAST — if idle went out before the
@@ -846,6 +1006,11 @@ export class PaneBridge {
     // and get stuck showing "inferring" with no closing idle.
     if (this.onTranscript) {
       await new Promise((r) => setTimeout(r, 1100));
+      // A session retarget abandoned this turn during the wait — this close is stale;
+      // aborting leaves the new session's turn fields (prose/tokens/start) and status
+      // intact instead of consuming and prematurely closing it. (No retarget ⇒ gen is
+      // unchanged ⇒ this never fires, so the default path is bit-identical.)
+      if (gen !== this.turnCloseGen) return;
     }
     // Release any paced tail before result/idle close the turn. This preserves
     // wire order without making long answers delay the terminal state.

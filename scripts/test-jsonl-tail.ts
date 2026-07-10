@@ -23,6 +23,16 @@ test("JsonlTail starts at EOF — pre-existing content is not replayed", async (
   assert.deepEqual(await tail.readNew(), []);
 });
 
+test("JsonlTail with fromStart reads pre-existing content whole", async () => {
+  // A /clear/resume retarget may find the new jsonl only after its first turn is written;
+  // fromStart attaches at offset 0 so that turn isn't skipped.
+  const f = scratch("first-1\nfirst-2\n");
+  const tail = new JsonlTail(f, parse, true);
+  assert.deepEqual(texts(await tail.readNew()), ["first-1", "first-2"]);
+  appendFileSync(f, "next\n");
+  assert.deepEqual(texts(await tail.readNew()), ["next"]); // then continues incrementally
+});
+
 test("JsonlTail returns only appended lines, once", async () => {
   const f = scratch("old\n");
   const tail = new JsonlTail(f, parse);
