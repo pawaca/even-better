@@ -4,11 +4,17 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  addClaudeHooks,
-  removeClaudeHooks,
+  addHookEntries,
+  removeHookEntries,
   installClaudeHooks,
+  installCodexHooks,
+  uninstallCodexHooks,
   hookHandler,
+  codexHookEntry,
+  shellSingleQuote,
+  codexHooksFeatureEnabled,
   CLAUDE_EVENTS,
+  CODEX_EVENTS,
   HOOK_MARKER,
 } from "../src/hook-install.js";
 
@@ -47,12 +53,12 @@ test("hookHandler installs in exec form (command sh + args), async, marker in ar
   assert.ok((HANDLER.args ?? []).some((a) => a.includes(HOOK_MARKER)));
 });
 
-test("addClaudeHooks adds our handler to every event without clobbering existing ones", () => {
+test("addHookEntries adds our handler to every event without clobbering existing ones", () => {
   const before = {
     hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "other-tool" }] }] },
     permissions: { allow: [] },
   };
-  const after = addClaudeHooks(before, HANDLER);
+  const after = addHookEntries(before, HANDLER);
   const pre = sigs(after, "PreToolUse");
   assert.ok(pre.includes("other-tool")); // existing preserved
   assert.equal(ours(pre).length, 1); // ours appended
@@ -60,21 +66,21 @@ test("addClaudeHooks adds our handler to every event without clobbering existing
   assert.deepEqual(after.permissions, { allow: [] }); // unrelated keys untouched
 });
 
-test("addClaudeHooks is idempotent — re-install never duplicates our handler", () => {
-  const twice = addClaudeHooks(addClaudeHooks({}, HANDLER), HANDLER);
+test("addHookEntries is idempotent — re-install never duplicates our handler", () => {
+  const twice = addHookEntries(addHookEntries({}, HANDLER), HANDLER);
   for (const ev of CLAUDE_EVENTS) assert.equal(ours(sigs(twice, ev)).length, 1, `duplicate on ${ev}`);
 });
 
-test("removeClaudeHooks strips only ours and round-trips to the original", () => {
+test("removeHookEntries strips only ours and round-trips to the original", () => {
   const original = { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "other-tool" }] }] } };
-  assert.deepEqual(removeClaudeHooks(addClaudeHooks(original, HANDLER)), original);
+  assert.deepEqual(removeHookEntries(addHookEntries(original, HANDLER)), original);
 });
 
-test("removeClaudeHooks drops emptied events and the hooks key when nothing remains", () => {
-  assert.equal(removeClaudeHooks(addClaudeHooks({}, HANDLER)).hooks, undefined);
+test("removeHookEntries drops emptied events and the hooks key when nothing remains", () => {
+  assert.equal(removeHookEntries(addHookEntries({}, HANDLER)).hooks, undefined);
 });
 
-test("removeClaudeHooks keeps a third-party hook coexisting in the same block", () => {
+test("removeHookEntries keeps a third-party hook coexisting in the same block", () => {
   const shared = {
     hooks: {
       PreToolUse: [
@@ -87,14 +93,14 @@ test("removeClaudeHooks keeps a third-party hook coexisting in the same block", 
       ],
     },
   };
-  assert.deepEqual(sigs(removeClaudeHooks(shared), "PreToolUse"), ["third-party"]);
+  assert.deepEqual(sigs(removeHookEntries(shared), "PreToolUse"), ["third-party"]);
 });
 
-test("removeClaudeHooks also strips a legacy shell-form entry (marker in command)", () => {
+test("removeHookEntries also strips a legacy shell-form entry (marker in command)", () => {
   const legacy = {
     hooks: { Stop: [{ hooks: [{ type: "command", command: `sh "/x/${HOOK_MARKER}" claude` }] }] },
   };
-  assert.equal(removeClaudeHooks(legacy).hooks, undefined);
+  assert.equal(removeHookEntries(legacy).hooks, undefined);
 });
 
 test("installClaudeHooks refuses to overwrite a malformed settings file (no-clobber)", () => {
@@ -110,5 +116,70 @@ test("installClaudeHooks refuses to overwrite a malformed settings file (no-clob
   } finally {
     if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
+// ── Codex ─────────────────────────────────────────────────────────────────────
+
+test("shellSingleQuote wraps and escapes embedded single quotes", () => {
+  assert.equal(shellSingleQuote("/a/b"), "'/a/b'");
+  assert.equal(shellSingleQuote("/a'b"), `'/a'\\''b'`);
+});
+
+test("codexHookEntry is a shell-string command with the marker, no async, 5s timeout", () => {
+  const e = codexHookEntry("/home/u/.even-better/even-better-hook.sh");
+  assert.equal(e.type, "command");
+  assert.equal(e.command, "sh '/home/u/.even-better/even-better-hook.sh' codex");
+  assert.ok((e.command ?? "").includes(HOOK_MARKER));
+  assert.equal(e.timeout, 5);
+  assert.equal(e.async, undefined); // Codex hooks.json has no async field
+});
+
+test("addHookEntries builds the Codex hooks.json shape for every codex event", () => {
+  const entry = codexHookEntry("/home/u/.even-better/even-better-hook.sh");
+  const doc = addHookEntries({}, entry, CODEX_EVENTS);
+  for (const ev of CODEX_EVENTS) assert.equal(ours(sigs(doc, ev)).length, 1, `missing on ${ev}`);
+  // block shape matches the observed codex format: { hooks: [ { command, timeout, type } ] }
+  const block = (doc.hooks as Record<string, unknown>).Stop as Array<{ hooks: unknown[] }>;
+  assert.equal(block[0].hooks.length, 1);
+});
+
+test("installCodexHooks writes hooks.json and uninstall round-trips, keeping others", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eb-codex-"));
+  const prev = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = dir;
+  const hooksPath = join(dir, "hooks.json");
+  // a pre-existing third-party codex hook must survive install + uninstall
+  const original = { hooks: { Stop: [{ hooks: [{ type: "command", command: "cmux hooks codex stop" }] }] } };
+  writeFileSync(hooksPath, JSON.stringify(original));
+  try {
+    installCodexHooks();
+    const after = JSON.parse(readFileSync(hooksPath, "utf8")) as Record<string, unknown>;
+    assert.equal(ours(sigs(after, "Stop")).length, 1); // ours added
+    assert.ok(sigs(after, "Stop").includes("cmux hooks codex stop")); // third-party kept
+    for (const ev of CODEX_EVENTS) assert.equal(ours(sigs(after, ev)).length, 1, `missing on ${ev}`);
+    uninstallCodexHooks();
+    const back = JSON.parse(readFileSync(hooksPath, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(back, original); // exactly the third-party hook remains
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prev;
+  }
+});
+
+test("codexHooksFeatureEnabled detects [features] hooks = true / false / absent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eb-codexcfg-"));
+  const prev = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = dir;
+  const cfg = join(dir, "config.toml");
+  try {
+    assert.equal(codexHooksFeatureEnabled(), null); // no config.toml
+    writeFileSync(cfg, "[features]\njs_repl = false\nhooks = true\n\n[other]\nx = 1\n");
+    assert.equal(codexHooksFeatureEnabled(), true);
+    writeFileSync(cfg, "[other]\nhooks = true\n\n[features]\njs_repl = false\n");
+    assert.equal(codexHooksFeatureEnabled(), false); // hooks=true is under [other], not [features]
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prev;
   }
 });

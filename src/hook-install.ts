@@ -1,8 +1,8 @@
 // Install/uninstall the even-better hook into the agent config. The config
 // transforms are pure (unit-tested against fixtures); the fs wrappers apply them.
 // Idempotent, never clobbers existing hooks, and removes only our marked entries.
-// Stage 1 covers Claude (`~/.claude/settings.json`); Codex (hooks.json + trust)
-// lands in a later stage. See docs/HOOK-MIGRATION.md "Install / uninstall".
+// Claude → `~/.claude/settings.json`; Codex → `$CODEX_HOME/hooks.json` (+ the user
+// trusts it via `/hooks`). See docs/HOOK-MIGRATION.md "Install / uninstall".
 
 import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -68,8 +68,10 @@ export function hookHandler(scriptPath: string, agent: "claude" | "codex"): Hook
 }
 
 /** Add our command to each event, idempotently (drops any prior even-better block
- *  first) and without touching other tools' hooks. Pure. */
-export function addClaudeHooks(
+ *  first) and without touching other tools' hooks. Pure. Structure-generic: the same
+ *  `{ hooks: { <Event>: [ { hooks: [entry] } ] } }` shape backs both Claude's
+ *  `settings.json` and Codex's `hooks.json`, so this drives both installs. */
+export function addHookEntries(
   settings: Record<string, unknown>,
   handler: HookEntry,
   events: readonly string[] = CLAUDE_EVENTS,
@@ -85,8 +87,9 @@ export function addClaudeHooks(
 }
 
 /** Remove our marked hook from every event; drop event arrays we emptied, and the
- *  `hooks` key if nothing remains. Leaves other tools' hooks untouched. Pure. */
-export function removeClaudeHooks(settings: Record<string, unknown>): Record<string, unknown> {
+ *  `hooks` key if nothing remains. Leaves other tools' hooks untouched. Pure. Drives
+ *  both the Claude and Codex uninstall (shared shape — see addHookEntries). */
+export function removeHookEntries(settings: Record<string, unknown>): Record<string, unknown> {
   if (!isRecord(settings.hooks)) return settings;
   const hooks: Record<string, unknown> = {};
   for (const [ev, val] of Object.entries(settings.hooks)) {
@@ -157,7 +160,7 @@ export function installClaudeHooks(): string {
   const current = readJson(path); // throws on a malformed existing file — abort before any write
   const script = stageHookScript();
   mkdirSync(dirname(path), { recursive: true });
-  const next = addClaudeHooks(current, hookHandler(script, "claude"));
+  const next = addHookEntries(current, hookHandler(script, "claude"));
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
   return path;
 }
@@ -167,7 +170,98 @@ export function installClaudeHooks(): string {
 export function uninstallClaudeHooks(): string | null {
   const path = claudeSettingsPath();
   if (!existsSync(path)) return null;
-  const next = removeClaudeHooks(readJson(path));
+  const next = removeHookEntries(readJson(path));
+  writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
+  return path;
+}
+
+// ── Codex (hooks.json + trust) ──────────────────────────────────────────────────
+// Codex reads hooks from `$CODEX_HOME/hooks.json` (same nested shape as Claude), but
+// it SKIPS a non-managed command hook until the user trusts the exact definition via
+// the `/hooks` TUI (a `[hooks.state].trusted_hash` in config.toml). We install +
+// enable the feature and guide the user through `/hooks`; we do NOT forge the trust
+// hash (codex-internal, version-fragile). See docs/HOOK-MIGRATION.md.
+
+// Codex lifecycle events we consume (PascalCase, per hooks.json). No StopFailure
+// (Codex has none); PostToolUse/compaction carry no status so we skip them.
+export const CODEX_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+  "PreToolUse",
+  "PermissionRequest",
+  "SubagentStart",
+  "SubagentStop",
+];
+
+/** POSIX single-quote a string so a path with shell metacharacters can't expand when
+ *  Codex runs the command through the shell (Codex hooks are a command STRING, not the
+ *  exec form Claude accepts). */
+export function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The Codex hook entry: a shell-string command (the script reads the payload on stdin
+ *  and takes the agent as $1). Synchronous within the 5s timeout — the send is a fast
+ *  local socket write. Identifiable by the script basename (HOOK_MARKER) for uninstall. */
+export function codexHookEntry(scriptPath: string): HookEntry {
+  return { type: "command", command: `sh ${shellSingleQuote(scriptPath)} codex`, timeout: 5 };
+}
+
+function codexHome(): string {
+  const raw = process.env.CODEX_HOME?.trim();
+  return raw ? raw : join(homedir(), ".codex");
+}
+
+function codexHooksPath(): string {
+  return join(codexHome(), "hooks.json");
+}
+
+function codexConfigPath(): string {
+  return join(codexHome(), "config.toml");
+}
+
+/** Best-effort read-only check of `[features] hooks = true` in config.toml. Returns
+ *  true/false, or null when config.toml is absent. Codex won't load hooks.json unless
+ *  the feature is on, so the install guidance tells the user to enable it when off. */
+export function codexHooksFeatureEnabled(): boolean | null {
+  const path = codexConfigPath();
+  if (!existsSync(path)) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  // Scan the [features] table for `hooks = true` before the next table header.
+  const lines = text.split("\n");
+  let inFeatures = false;
+  for (const raw of lines) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (/^\[[^\]]+\]/.test(line)) inFeatures = /^\[features\]/.test(line);
+    else if (inFeatures && /^hooks\s*=\s*true\b/.test(line)) return true;
+  }
+  return false;
+}
+
+/** Install the Codex hooks into `$CODEX_HOME/hooks.json` (idempotent, additive).
+ *  Returns the path written. Trust + the feature flag are the user's step via `/hooks`. */
+export function installCodexHooks(): string {
+  const path = codexHooksPath();
+  const current = readJson(path); // throws on a malformed existing file — abort before any write
+  const script = stageHookScript();
+  mkdirSync(dirname(path), { recursive: true });
+  const next = addHookEntries(current, codexHookEntry(script), CODEX_EVENTS);
+  writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
+  return path;
+}
+
+/** Uninstall the Codex hooks (leaves other tools' entries intact). Returns the path,
+ *  or null if there was no hooks.json. */
+export function uninstallCodexHooks(): string | null {
+  const path = codexHooksPath();
+  if (!existsSync(path)) return null;
+  const next = removeHookEntries(readJson(path));
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
   return path;
 }
