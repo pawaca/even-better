@@ -29,6 +29,7 @@ import {
   installCodexHooks,
   uninstallCodexHooks,
   codexHooksFeatureEnabled,
+  codexConfigPath,
 } from "./hook-install.js";
 
 const VERSION = "0.1.0";
@@ -47,7 +48,7 @@ if (process.argv.includes("hook-install")) {
     console.log("");
     console.log("Codex needs two manual steps (it won't run untrusted hooks):");
     if (codexHooksFeatureEnabled() === false) {
-      console.log("  1. enable hooks: set `hooks = true` under `[features]` in ~/.codex/config.toml");
+      console.log(`  1. enable hooks: set \`hooks = true\` under \`[features]\` in ${codexConfigPath()}`);
     } else {
       console.log("  1. hooks feature is already enabled ✓");
     }

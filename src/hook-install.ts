@@ -217,7 +217,7 @@ function codexHooksPath(): string {
   return join(codexHome(), "hooks.json");
 }
 
-function codexConfigPath(): string {
+export function codexConfigPath(): string {
   return join(codexHome(), "config.toml");
 }
 
