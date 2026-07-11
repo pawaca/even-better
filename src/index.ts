@@ -23,7 +23,14 @@ import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
 import { startExpose, exposeProviderNames } from "./expose.js";
 import { startHookEndpoint, hookSocketPath } from "./hook-endpoint.js";
-import { installClaudeHooks, uninstallClaudeHooks } from "./hook-install.js";
+import {
+  installClaudeHooks,
+  uninstallClaudeHooks,
+  installCodexHooks,
+  uninstallCodexHooks,
+  codexHooksFeatureEnabled,
+  codexConfigPath,
+} from "./hook-install.js";
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
@@ -31,10 +38,23 @@ const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
 // CLI: install/uninstall the self-hook and exit, before touching the mux or server.
 // (Stage 1 of docs/HOOK-MIGRATION.md — reporting only; the bridge is not wired yet.)
 if (process.argv.includes("hook-install")) {
+  // Explicit opt-in command (this invocation IS the consent) — install both agents and
+  // walk the Codex user through the one manual step (trust) we can't safely automate.
   try {
-    const p = installClaudeHooks();
-    console.log(`installed even-better Claude hooks → ${p}`);
-    console.log("restart already-running Claude panes to pick up the hook.");
+    const claude = installClaudeHooks();
+    console.log(`installed even-better Claude hooks → ${claude}`);
+    const codex = installCodexHooks();
+    console.log(`installed even-better Codex hooks  → ${codex}`);
+    console.log("");
+    console.log("Codex needs two manual steps (it won't run untrusted hooks):");
+    if (codexHooksFeatureEnabled() === false) {
+      console.log(`  1. enable hooks: set \`hooks = true\` under \`[features]\` in ${codexConfigPath()}`);
+    } else {
+      console.log("  1. hooks feature is already enabled ✓");
+    }
+    console.log("  2. run `/hooks` inside Codex, review the even-better hooks, and trust them.");
+    console.log("");
+    console.log("then restart already-running Claude/Codex panes to pick up the hooks.");
   } catch (err) {
     console.error(`hook-install failed: ${(err as Error).message}`);
     process.exit(1);
@@ -43,8 +63,11 @@ if (process.argv.includes("hook-install")) {
 }
 if (process.argv.includes("hook-uninstall")) {
   try {
-    const p = uninstallClaudeHooks();
-    console.log(p ? `removed even-better Claude hooks ← ${p}` : "no ~/.claude/settings.json to clean");
+    const claude = uninstallClaudeHooks();
+    console.log(claude ? `removed even-better Claude hooks ← ${claude}` : "no ~/.claude/settings.json to clean");
+    const codex = uninstallCodexHooks();
+    console.log(codex ? `removed even-better Codex hooks  ← ${codex}` : "no Codex hooks.json to clean");
+    console.log("(Codex trust entries in config.toml, if any, are yours to remove via `/hooks`.)");
   } catch (err) {
     console.error(`hook-uninstall failed: ${(err as Error).message}`);
     process.exit(1);
