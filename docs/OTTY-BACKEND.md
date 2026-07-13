@@ -44,7 +44,7 @@ Compare the herdr/cmux columns in `docs/MULTIPLEXERS.md` §1.
 |---|---|---|
 | `name` | `"otty"` | Selected by `MUX=otty`, or auto-picked if `ottyAvailable()` and it is the only backend found (`index.ts` `selectMux`). |
 | `listPanes()` | `otty panes --json` | One command → all panes with cwd + process names + focus. **Simpler than cmux** (no hook-file archaeology). Agent type from the process list (`claude`/`codex`). Ⓟ field names. |
-| `watchStatus()` | **poll** (otty has no event stream) | Emits **only `awaiting` + `closed`**; busy/idle/closeError are deferred to `SELF_HOOK`. See decision B. |
+| `watchStatus()` | **poll** (otty has no event stream) | Emits `awaiting`/`closed` **and the busy/idle edge that leaves an `awaiting`** (menu clear); it does not *independently* drive the turn's busy/idle — that's `SELF_HOOK`. See decision B. |
 | `read(id, lines)` | `otty pane capture --pane <id> --lines <n>` | Direct map. Ⓟ whether `--lines 0` = viewport or full scrollback. |
 | `send(id, text, keys)` | `otty pane send-keys --pane <id> -- "<text>"`, then one call per key `... -- key:Enter` | Text first, then keys **one at a time with a gap** (invariant — never bundle, see `pressAndVerify` in `bridge.ts`). otty key tokens are `key:Enter`/`key:Down`/… — nearly identical to even-better's `Key` names, so `KEY_MAP` is near-identity. Ⓟ bare-key (no text) form + token names. |
 | `sessionId(id)` | **none** → `undefined` | otty's pane id is *otty's* session id, not the agent transcript UUID. Supplied by `SELF_HOOK` cutover instead. See decision A. |
@@ -78,12 +78,19 @@ UUID. So:
   pre-hook window. Deferred — the hook is authoritative and the invariant prefers
   "no content until it resolves" over a guess.
 
-### B. No event stream ⇒ `watchStatus()` is a poller that reports only `awaiting`/`closed`
+### B. No event stream ⇒ `watchStatus()` is a poller for `awaiting`/`closed` (+ the awaiting-exit edge)
 
 cmux gets all status from `cmux events`. otty has none — only blocking
-`otty watch:<agent>` (exit 0 on idle) and query `otty state:<agent>`. But
-`SELF_HOOK` already owns busy/idle/closeError, so otty's `watchStatus` does **not**
-emit those. It covers the two things the invariant assigns to the mux:
+`otty watch:<agent>` (exit 0 on idle) and query `otty state:<agent>`. `SELF_HOOK`
+already owns the turn's busy/idle/closeError, so otty's `watchStatus` does **not**
+*independently* drive those. But it still must emit the busy/idle **edge that
+clears an `awaiting`**: `PaneBridge` deliberately lets the mux drive busy/idle
+*while* the state is `awaiting` so a confirmed menu can clear (exactly what cmux's
+`checkCodexApproval` does — `busy` when the blocker disappears mid-turn, `idle`
+when the turn also ended; `cmux.ts` `checkCodexApproval`). Deferring **all**
+busy/idle to `SELF_HOOK` would strand a pane in `awaiting` after the user approves.
+So `watchStatus` covers the two things the invariant assigns to the mux, plus that
+one exit edge:
 
 - **`awaiting`** (permission/question menu). Per the interaction-layer invariant,
   **the screen is authoritative** (a hook's PermissionRequest is only a candidate).
@@ -124,6 +131,34 @@ Appending even-better's entries shifts `(i,j)` for entries after the insertion
 point, which can invalidate otty's already-trusted entries and force a re-approve
 via `/hooks`. **This must be checked live** (probe P7). Claude has no such
 positional trust, so claude coexistence is expected to be clean.
+
+### D. Hook→pane routing: otty needs a pane-id env var, or the pid fallback wired in
+
+**This is a prerequisite for decision A, not a nice-to-have — it is the mechanism
+that makes `SELF_HOOK` reach a bridge at all.** For a self-hook report to drive a
+pane, it must resolve to an even-better `paneId`. The installed hook
+(`assets/even-better-hook.sh`) fills `paneId` from a **mux-specific env var** —
+cmux `CMUX_SURFACE_ID`, herdr `HERDR_PANE_ID` (`src/hook-report.ts:11-13`) — and
+`src/index.ts` currently routes **only** on a non-empty `r.paneId`
+(`index.ts:549`). The `resolvePaneId` pid fallback exists as a pure function
+(`src/hook-report.ts:82`) but is **not yet wired into that routing** (noted there
+as landing in a later stage). otty exports no such env var, so with no work every
+otty hook report arrives with an empty `paneId` and is dropped ⇒ `hookSessionKnown`
+never sets ⇒ decision A's whole premise fails silently.
+
+Two ways to close it (choose after probe P8):
+
+1. **env var (preferred if it exists).** If otty exports a stable per-pane id into
+   the agent's environment (probe P8), teach the hook script to emit
+   `mux:"otty"` + `paneId:$OTTY_…`, matching the cmux/herdr branches. Cleanest —
+   reuses the existing env-primary routing untouched.
+2. **pid fallback.** Wire `resolvePaneId` into `index.ts` routing **and** expose
+   each pane's **agent pid** in `OttyMultiplexer.listPanes()` (requires
+   `otty panes --json` to carry a pid — probe P1). An empty-`paneId` report then
+   resolves by its `pid` matching exactly one pane. More moving parts, but works
+   with no otty env var.
+
+Track this as **blocking for v1**.
 
 ---
 
@@ -191,6 +226,11 @@ otty events --help    # if this exists, watchStatus can subscribe instead of pol
 #   2. Run even-better's codex hook install (adds entries to ~/.codex/hooks.json).
 #   3. Restart codex: does /hooks re-prompt trust for otty's entries too? Do otty's
 #      hooks still fire? Does even-better's fire? (claude: confirm both fire, no prompt.)
+
+# P8 — hook→pane routing (decision D — BLOCKING for v1)
+env | grep -i otty     # inside the agent pane: does otty export a per-pane id env var?
+# → if yes: the hook script reads it (route by env). if no: need the pid fallback,
+#   so confirm P1's `otty panes --json` carries the agent process pid.
 ```
 
 **Fill-in table (paste concrete answers):**
@@ -204,11 +244,15 @@ otty events --help    # if this exists, watchStatus can subscribe instead of pol
 | P5 | `pane show` on a missing pane → ? | |
 | P6 | any `otty events` stream? | |
 | P7 | codex `/hooks` re-trust needed? both hooks fire? | |
+| P8 | otty per-pane id env var? else `panes --json` has agent pid? | |
 
 ---
 
 ## 5. Open questions / risks (revisit after probes)
 
+- **P8/decision D is the top blocker.** Without an otty pane-id env var *or* the
+  pid fallback wired in, no self-hook report reaches a bridge and the whole
+  `SELF_HOOK`-only design is inert. Resolve P8 before any other work.
 - **P4 is load-bearing for §2B.** If `otty state:` does not expose an
   awaiting/blocked signal, the awaiting poll must blind-capture the screen on an
   interval while a turn is believed busy — heavier, and it needs a "believed busy"
