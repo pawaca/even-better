@@ -7,6 +7,21 @@
 // A text item streams `chars` from `pos`; an event item is emitted whole.
 type Item = { chars: string[]; pos: number } | { event: object };
 
+const isSpace = (c: string): boolean => /\s/.test(c);
+
+/** End a frame at a WORD boundary. Take ~`step` code points, then EXTEND past the rest of
+ *  the current word (and its trailing whitespace) so a word is never split across two frames
+ *  — the glasses wrap at spaces, so a word split across frames could land its halves on
+ *  separate lines. Extending (rather than backing up) keeps whole any word longer than
+ *  `step`, which the small-backlog step of 3 would otherwise chop. A single token longer
+ *  than the whole remaining text (a bare URL) just becomes one frame. Pure + unit-tested. */
+export function frameEnd(chars: string[], pos: number, step: number): number {
+  let end = Math.min(pos + step, chars.length);
+  while (end < chars.length && !isSpace(chars[end])) end++; // finish the current word
+  while (end < chars.length && isSpace(chars[end])) end++; // and its trailing space run
+  return end;
+}
+
 export class OutputStream {
   private queue: Item[] = [];
   private pacer: ReturnType<typeof setTimeout> | null = null;
@@ -86,8 +101,9 @@ export class OutputStream {
       // while a short one types gently enough to read on the glasses; never
       // fewer than 3. At the default tickMs a short answer reveals ~20 chars/s.
       const n = Math.min(18, Math.max(3, Math.ceil(this.pendingChars() / 160)));
-      this.emit({ type: "text_delta", text: head.chars.slice(head.pos, head.pos + n).join("") });
-      head.pos += n;
+      const end = frameEnd(head.chars, head.pos, n);
+      this.emit({ type: "text_delta", text: head.chars.slice(head.pos, end).join("") });
+      head.pos = end;
       if (head.pos >= head.chars.length) this.queue.shift();
     }
     this.pacer = setTimeout(() => this.tick(), this.tickMs);

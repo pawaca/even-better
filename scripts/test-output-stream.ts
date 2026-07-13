@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OutputStream } from "../src/output-stream.js";
+import { OutputStream, frameEnd } from "../src/output-stream.js";
 
 // text reconstructs seamlessly; an event interleaves in order
 const got: object[] = [];
@@ -30,6 +30,35 @@ os3.text("🎉🎊🥳🚀✨");
 await os3.drain();
 const joined = got3.join("");
 test("emoji intact", () => assert.ok(joined === "🎉🎊🥳🚀✨" && got3.every((s) => !s.includes("�")), JSON.stringify(joined)));
+
+// frameEnd: frames end at word boundaries so a word never spans two frames.
+test("frameEnd extends to finish a word longer than step (no split)", () => {
+  const chars = [..."hello world"]; // step 3 lands mid-"hello"
+  assert.equal(chars.slice(0, frameEnd(chars, 0, 3)).join(""), "hello "); // whole word + its space
+});
+
+test("frameEnd returns the whole remainder on the last frame", () => {
+  const chars = [..."ab cd"];
+  assert.equal(frameEnd(chars, 0, 99), 5); // beyond end → whole
+});
+
+test("frameEnd keeps a very long token whole (a bare URL)", () => {
+  const chars = [..."supercalifragilistic more"]; // 20-char token, then a space
+  assert.equal(chars.slice(0, frameEnd(chars, 0, 5)).join(""), "supercalifragilistic "); // whole token + space
+});
+
+test("streaming a spaced sentence never splits a word across frames", async () => {
+  const parts: string[] = [];
+  const os = new OutputStream((m) => parts.push((m as { text?: string }).text ?? ""), 1);
+  const sentence = "the quick brown fox jumps over the lazy dog and runs away";
+  os.text(sentence);
+  await os.drain();
+  assert.equal(parts.join(""), sentence); // lossless
+  // every frame except the last ends at whitespace (or is a whole long token with none)
+  for (const p of parts.slice(0, -1)) {
+    if (/\s/.test(p)) assert.ok(/\s$/.test(p), `frame not ending at a boundary: ${JSON.stringify(p)}`);
+  }
+});
 
 // flush() preserves order and releases pending text immediately.
 const got4: object[] = [];
