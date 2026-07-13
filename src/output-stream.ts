@@ -9,16 +9,26 @@ type Item = { chars: string[]; pos: number } | { event: object };
 
 const isSpace = (c: string): boolean => /\s/.test(c);
 
-/** End a frame at a WORD boundary. Take ~`step` code points, then EXTEND past the rest of
- *  the current word (and its trailing whitespace) so a word is never split across two frames
- *  — the glasses wrap at spaces, so a word split across frames could land its halves on
- *  separate lines. Extending (rather than backing up) keeps whole any word longer than
- *  `step`, which the small-backlog step of 3 would otherwise chop. A single token longer
- *  than the whole remaining text (a bare URL) just becomes one frame. Pure + unit-tested. */
+// How far past `pos+step` we'll reach to finish a space-delimited word. Longer than any
+// normal word, so Latin words are kept whole; a spaceless run (CJK prose, minified JSON, a
+// bare URL) has no space within reach, so it keeps normal step pacing instead of bursting.
+const MAX_WORD_EXTEND = 24;
+
+/** End a frame at a WORD boundary when one is within reach. Take ~`step` code points; if
+ *  that lands inside a space-delimited word AND a space is at most `MAX_WORD_EXTEND` further
+ *  on, extend past the rest of the word and its trailing whitespace so the word is never
+ *  split across frames (the glasses wrap at spaces, so a split word could land on two lines).
+ *  If no space is within reach — a long spaceless run — DON'T extend: return the raw `step`
+ *  boundary so such text (notably CJK) still paces smoothly rather than arriving in one
+ *  burst. Pure + unit-tested. */
 export function frameEnd(chars: string[], pos: number, step: number): number {
-  let end = Math.min(pos + step, chars.length);
-  while (end < chars.length && !isSpace(chars[end])) end++; // finish the current word
-  while (end < chars.length && isSpace(chars[end])) end++; // and its trailing space run
+  const raw = Math.min(pos + step, chars.length);
+  if (raw >= chars.length) return raw; // last frame — nothing after it to split
+  const limit = Math.min(raw + MAX_WORD_EXTEND, chars.length);
+  let end = raw;
+  while (end < limit && !isSpace(chars[end])) end++; // reach for the end of the current word
+  if (end >= limit) return raw; // no space within reach → spaceless run, keep step pacing
+  while (end < chars.length && isSpace(chars[end])) end++; // include its trailing space run
   return end;
 }
 

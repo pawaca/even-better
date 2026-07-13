@@ -42,9 +42,16 @@ test("frameEnd returns the whole remainder on the last frame", () => {
   assert.equal(frameEnd(chars, 0, 99), 5); // beyond end → whole
 });
 
-test("frameEnd keeps a very long token whole (a bare URL)", () => {
-  const chars = [..."supercalifragilistic more"]; // 20-char token, then a space
-  assert.equal(chars.slice(0, frameEnd(chars, 0, 5)).join(""), "supercalifragilistic "); // whole token + space
+test("frameEnd keeps a long word whole when its space is within reach", () => {
+  const chars = [..."supercalifragilistic more"]; // 20-char word, then a space (within MAX_WORD_EXTEND)
+  assert.equal(chars.slice(0, frameEnd(chars, 0, 5)).join(""), "supercalifragilistic "); // whole word + space
+});
+
+test("frameEnd does NOT extend a spaceless run (CJK/long token) — keeps step pacing", () => {
+  const chars = [..."这是一段没有空格的中文长文本会被逐步分帧而不是一次性蹦出来"]; // no spaces
+  assert.equal(frameEnd(chars, 0, 5), 5); // no space within reach → raw step boundary, still paced
+  const url = [..."https://example.com/a/very/long/path/that/has/no/spaces/at/all/here"];
+  assert.equal(frameEnd(url, 0, 6), 6); // long token also paced, not one burst
 });
 
 test("streaming a spaced sentence never splits a word across frames", async () => {
