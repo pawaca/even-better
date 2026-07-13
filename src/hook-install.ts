@@ -290,10 +290,15 @@ function readJsonSafe(path: string): Record<string, unknown> | null {
   }
 }
 
-/** Whether our hook is currently installed for each agent — so the server can warn when
- *  SELF_HOOK is on but no reports will arrive. Best-effort + read-only. */
+/** Whether our hook is EFFECTIVELY installed for each agent — so the server can warn when
+ *  SELF_HOOK is on but no reports will arrive. Best-effort + read-only. Codex needs both the
+ *  marked hook AND `[features] hooks = true`, since without the feature it never loads
+ *  hooks.json (our entry is present but inert). */
 export function hooksInstalled(): { claude: boolean; codex: boolean } {
   const claude = readJsonSafe(claudeSettingsPath());
   const codex = readJsonSafe(codexHooksPath());
-  return { claude: !!claude && anyOurHook(claude), codex: !!codex && anyOurHook(codex) };
+  return {
+    claude: !!claude && anyOurHook(claude),
+    codex: !!codex && anyOurHook(codex) && codexHooksFeatureEnabled() === true,
+  };
 }

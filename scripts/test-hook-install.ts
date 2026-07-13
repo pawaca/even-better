@@ -174,12 +174,16 @@ test("hooksInstalled reflects our marker in each agent's config", () => {
   const prevX = process.env.CODEX_HOME;
   process.env.CLAUDE_CONFIG_DIR = join(dir, "claude"); // installClaudeHooks mkdirs this
   process.env.CODEX_HOME = dir;
+  const codexCfg = join(dir, "config.toml");
   try {
     assert.deepEqual(hooksInstalled(), { claude: false, codex: false }); // nothing yet
     installClaudeHooks();
     assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
     installCodexHooks();
-    assert.deepEqual(hooksInstalled(), { claude: true, codex: true });
+    // hooks.json has our marker, but codex still needs [features] hooks = true to load it
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+    writeFileSync(codexCfg, "[features]\nhooks = true\n");
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: true }); // now effective
     uninstallCodexHooks();
     assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
   } finally {

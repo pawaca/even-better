@@ -27,7 +27,10 @@ export function maskToken(t: string): string {
 export function printConnect(label: string, fullUrl: string, qrEnabled: boolean): void {
   const showToken = process.env.SHOW_TOKEN === "1";
   console.log(`  ${label} · ${redactToken(fullUrl)}`);
-  if (qrEnabled) qrcodeTerminal.generate(fullUrl, { small: true }, (code) => console.log(code));
+  // The QR encodes the FULL URL (token included). Write it straight to the terminal, NOT via
+  // console.log — the diag-log tee wraps console.* and would persist the QR's glyphs to disk,
+  // where the token is still decodable even though the printed URL is redacted.
+  if (qrEnabled) qrcodeTerminal.generate(fullUrl, { small: true }, (code) => process.stdout.write(code + "\n"));
   if (!qrEnabled || showToken) console.log(`  Full URL · ${fullUrl}`);
   else console.log("  (the QR carries the token; set SHOW_TOKEN=1 to print the full URL)");
 }
