@@ -7,6 +7,31 @@
 // A text item streams `chars` from `pos`; an event item is emitted whole.
 type Item = { chars: string[]; pos: number } | { event: object };
 
+const isSpace = (c: string): boolean => /\s/.test(c);
+
+// How far past `pos+step` we'll reach to finish a space-delimited word. Longer than any
+// normal word, so Latin words are kept whole; a spaceless run (CJK prose, minified JSON, a
+// bare URL) has no space within reach, so it keeps normal step pacing instead of bursting.
+const MAX_WORD_EXTEND = 24;
+
+/** End a frame at a WORD boundary when one is within reach. Take ~`step` code points; if
+ *  that lands inside a space-delimited word AND a space is at most `MAX_WORD_EXTEND` further
+ *  on, extend past the rest of the word and its trailing whitespace so the word is never
+ *  split across frames (the glasses wrap at spaces, so a split word could land on two lines).
+ *  If no space is within reach — a long spaceless run — DON'T extend: return the raw `step`
+ *  boundary so such text (notably CJK) still paces smoothly rather than arriving in one
+ *  burst. Pure + unit-tested. */
+export function frameEnd(chars: string[], pos: number, step: number): number {
+  const raw = Math.min(pos + step, chars.length);
+  if (raw >= chars.length) return raw; // last frame — nothing after it to split
+  const limit = Math.min(raw + MAX_WORD_EXTEND, chars.length);
+  let end = raw;
+  while (end < limit && !isSpace(chars[end])) end++; // reach for the end of the current word
+  if (end >= limit) return raw; // no space within reach → spaceless run, keep step pacing
+  while (end < chars.length && isSpace(chars[end])) end++; // include its trailing space run
+  return end;
+}
+
 export class OutputStream {
   private queue: Item[] = [];
   private pacer: ReturnType<typeof setTimeout> | null = null;
@@ -86,8 +111,9 @@ export class OutputStream {
       // while a short one types gently enough to read on the glasses; never
       // fewer than 3. At the default tickMs a short answer reveals ~20 chars/s.
       const n = Math.min(18, Math.max(3, Math.ceil(this.pendingChars() / 160)));
-      this.emit({ type: "text_delta", text: head.chars.slice(head.pos, head.pos + n).join("") });
-      head.pos += n;
+      const end = frameEnd(head.chars, head.pos, n);
+      this.emit({ type: "text_delta", text: head.chars.slice(head.pos, end).join("") });
+      head.pos = end;
       if (head.pos >= head.chars.length) this.queue.shift();
     }
     this.pacer = setTimeout(() => this.tick(), this.tickMs);
