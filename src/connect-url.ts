@@ -17,9 +17,12 @@ export function redactToken(url: string): string {
   }
 }
 
-/** First4…last4 of a token, so the Token line identifies it without printing the secret. */
+/** First4…last4 of a token, so the Token line identifies it without printing the secret —
+ *  but only for a long token (the 48-char ephemeral one). A short custom BRIDGE_TOKEN is
+ *  hidden whole, else `test-token` would print as `test…oken` and leave little to brute-force
+ *  against the visible URL. */
 export function maskToken(t: string): string {
-  return t.length > 8 ? `${t.slice(0, 4)}…${t.slice(-4)}` : "…";
+  return t.length >= 24 ? `${t.slice(0, 4)}…${t.slice(-4)}` : "…";
 }
 
 /** Print a connect line: a token-redacted URL for humans + the QR carrying the full token.

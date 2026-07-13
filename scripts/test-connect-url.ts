@@ -19,7 +19,9 @@ test("redactToken returns the input unchanged when it isn't a URL", () => {
   assert.equal(redactToken("not a url"), "not a url");
 });
 
-test("maskToken shows only the first and last few characters", () => {
-  assert.equal(maskToken("9f597d422fd5519bad71996507808aaa"), "9f59…8aaa");
-  assert.equal(maskToken("short"), "…"); // too short to partially reveal
+test("maskToken shows prefix/suffix only for a long token, hides short ones whole", () => {
+  assert.equal(maskToken("9f597d422fd5519bad71996507808aaa"), "9f59…8aaa"); // 32 chars → revealed ends
+  assert.equal(maskToken("test-token"), "…"); // short custom token → fully hidden (not test…oken)
+  assert.equal(maskToken("a".repeat(23)), "…"); // just under the threshold → hidden
+  assert.equal(maskToken("a".repeat(24)), "aaaa…aaaa"); // at the threshold → revealed
 });

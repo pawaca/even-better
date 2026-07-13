@@ -565,11 +565,12 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
       if (!inst.claude && !inst.codex) {
         console.log("  ⚠ SELF_HOOK=1 but no even-better hooks are installed — no reports will arrive.");
         console.log("    Run `pnpm start hook-install`, then restart the agent panes.");
-      } else if (!inst.claude) {
-        console.log("  ⚠ SELF_HOOK=1 — Claude hooks not installed; re-run hook-install.");
-      }
-      if (inst.codex) {
-        console.log("    Codex: hooks installed — they report only once trusted via `/hooks` (not verifiable here).");
+      } else {
+        // Warn per agent that isn't set up (a codex-only pane must not be silently missed).
+        if (!inst.claude) console.log("  ⚠ SELF_HOOK=1 — Claude hooks not installed; run hook-install.");
+        if (!inst.codex)
+          console.log("  ⚠ SELF_HOOK=1 — Codex hooks not active (need hooks.json + `[features] hooks=true`); run hook-install / enable the feature.");
+        else console.log("    Codex: hooks installed — they report only once trusted via `/hooks` (not verifiable here).");
       }
     }
   } catch (err) {
