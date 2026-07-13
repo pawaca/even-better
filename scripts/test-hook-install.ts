@@ -13,6 +13,7 @@ import {
   codexHookEntry,
   shellSingleQuote,
   codexHooksFeatureEnabled,
+  hooksInstalled,
   CLAUDE_EVENTS,
   CODEX_EVENTS,
   HOOK_MARKER,
@@ -164,6 +165,32 @@ test("installCodexHooks writes hooks.json and uninstall round-trips, keeping oth
   } finally {
     if (prev === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prev;
+  }
+});
+
+test("hooksInstalled reflects our marker in each agent's config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eb-inst-"));
+  const prevC = process.env.CLAUDE_CONFIG_DIR;
+  const prevX = process.env.CODEX_HOME;
+  process.env.CLAUDE_CONFIG_DIR = join(dir, "claude"); // installClaudeHooks mkdirs this
+  process.env.CODEX_HOME = dir;
+  const codexCfg = join(dir, "config.toml");
+  try {
+    assert.deepEqual(hooksInstalled(), { claude: false, codex: false }); // nothing yet
+    installClaudeHooks();
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+    installCodexHooks();
+    // hooks.json has our marker, but codex still needs [features] hooks = true to load it
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+    writeFileSync(codexCfg, "[features]\nhooks = true\n");
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: true }); // now effective
+    uninstallCodexHooks();
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+  } finally {
+    if (prevC === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevC;
+    if (prevX === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevX;
   }
 });
 

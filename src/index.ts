@@ -5,7 +5,6 @@ import readline from "node:readline";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import qrcodeTerminal from "qrcode-terminal";
 import {
   disposeAll,
   focusedOrFirstBridge,
@@ -17,7 +16,7 @@ import { emit, getMessages, sseHandler } from "./sse.js";
 import { getMux, setMux, type Multiplexer } from "./multiplexer.js";
 import { HerdrMultiplexer, herdrAvailable } from "./herdr.js";
 import { CmuxMultiplexer, cmuxAvailable } from "./cmux.js";
-import { logEvent, eventLogPath, logMode, writesEventLog } from "./log.js";
+import { logEvent, eventLogPath, logMode, writesEventLog, consoleLogPath, installConsoleTee } from "./log.js";
 import { extractModel } from "./parse.js";
 import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
@@ -30,7 +29,13 @@ import {
   uninstallCodexHooks,
   codexHooksFeatureEnabled,
   codexConfigPath,
+  hooksInstalled,
 } from "./hook-install.js";
+import { maskToken, printConnect } from "./connect-url.js";
+
+// Tee the terminal diagnostics to a file before anything logs, so the lines needed to
+// diagnose a live issue are on disk without re-running with a flag.
+installConsoleTee();
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
@@ -509,9 +514,10 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   console.log(`  Local    : http://${bind.bindHost === "0.0.0.0" ? "127.0.0.1" : bind.bindHost}:${actualPort}`);
   if (basePaths.length > 0) console.log(`  Paths    : ${basePaths.join(", ")}`);
   if (publicAccess) console.log(`  Public   : ${publicAccess}`);
-  console.log(`  Token    : ${TOKEN}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
+  console.log(`  Token    : ${maskToken(TOKEN)}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
   console.log(`  Log mode : ${logMode}`);
   console.log(`  Log      : ${writesEventLog ? eventLogPath : "off"}`);
+  if (logMode !== "off") console.log(`  Diag log : ${consoleLogPath}`);
   console.log("");
   try {
     const agents = await refreshAgents();
@@ -521,7 +527,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
       console.log(`  agent : ${a.agent} pane=${a.paneId} status=${a.status} cwd=${a.cwd}`);
     }
     if (agents.length === 0) {
-      console.log(`  agent : (none detected — start claude/codex inside ${getMux().name})`);
+      console.log(`  agent : none yet — start claude or codex inside ${getMux().name}; it's picked up automatically (no restart).`);
     }
   } catch (err) {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
@@ -549,15 +555,31 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
     console.log(
       `  Hooks    : ${hookSocketPath()} (${selfHook ? "SELF_HOOK on — driving bridges" : "log-only; SELF_HOOK=1 to drive"})`,
     );
+    // SELF_HOOK drives bridges only if our hook is actually installed — else no reports
+    // arrive and the pane silently never cuts over. Warn so it isn't a silent no-op.
+    // `inst.codex` = our hook.json entry + the feature on; Codex ALSO needs a `/hooks` trust
+    // we can't verify here, so we never claim Codex "will report" — only flag it isn't set up
+    // and, when it is, remind about the unverifiable trust step.
+    if (selfHook) {
+      const inst = hooksInstalled();
+      if (!inst.claude && !inst.codex) {
+        console.log("  ⚠ SELF_HOOK=1 but no even-better hooks are installed — no reports will arrive.");
+        console.log("    Run `pnpm start hook-install`, then restart the agent panes.");
+      } else {
+        // Warn per agent that isn't set up (a codex-only pane must not be silently missed).
+        if (!inst.claude) console.log("  ⚠ SELF_HOOK=1 — Claude hooks not installed; run hook-install.");
+        if (!inst.codex)
+          console.log("  ⚠ SELF_HOOK=1 — Codex hooks not active (need hooks.json + `[features] hooks=true`); run hook-install / enable the feature.");
+        else console.log("    Codex: hooks installed — they report only once trusted via `/hooks` (not verifiable here).");
+      }
+    }
   } catch (err) {
     console.error(`  Hooks    : disabled — ${(err as Error).message}`);
   }
 
   if (publicBase) {
-    const url = appUrlFromBase(publicBase);
     console.log("");
-    console.log(`  Scan to connect · ${url}`);
-    if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+    printConnect("Scan to connect", appUrlFromBase(publicBase), qrEnabled);
     return;
   }
 
@@ -574,9 +596,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   const host = bind.qrHost ?? "localhost";
   if (!bind.qrHost) console.log("  (no LAN address found — showing localhost, which a phone can't reach)");
   console.log("");
-  const url = urlFor(host, actualPort);
-  console.log(`  Scan to connect · ${url}`);
-  if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+  printConnect("Scan to connect", urlFor(host, actualPort), qrEnabled);
 });
 
 // Tear down both the bridges and the multiplexer (cmux holds a long-lived
