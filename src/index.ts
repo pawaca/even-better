@@ -557,15 +557,19 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
     );
     // SELF_HOOK drives bridges only if our hook is actually installed — else no reports
     // arrive and the pane silently never cuts over. Warn so it isn't a silent no-op.
+    // `inst.codex` = our hook.json entry + the feature on; Codex ALSO needs a `/hooks` trust
+    // we can't verify here, so we never claim Codex "will report" — only flag it isn't set up
+    // and, when it is, remind about the unverifiable trust step.
     if (selfHook) {
       const inst = hooksInstalled();
       if (!inst.claude && !inst.codex) {
         console.log("  ⚠ SELF_HOOK=1 but no even-better hooks are installed — no reports will arrive.");
         console.log("    Run `pnpm start hook-install`, then restart the agent panes.");
-      } else if (!inst.claude || !inst.codex) {
-        console.log(
-          `  ⚠ SELF_HOOK=1 — ${inst.claude ? "Codex" : "Claude"} hooks not installed (only ${inst.claude ? "Claude" : "Codex"} will report); re-run hook-install.`,
-        );
+      } else if (!inst.claude) {
+        console.log("  ⚠ SELF_HOOK=1 — Claude hooks not installed; re-run hook-install.");
+      }
+      if (inst.codex) {
+        console.log("    Codex: hooks installed — they report only once trusted via `/hooks` (not verifiable here).");
       }
     }
   } catch (err) {
