@@ -99,9 +99,20 @@ one exit edge:
   and `otty watch:<agent> <id>` *blocks* until idle (a gate, not a snapshot). So there
   is no cheap state gate to read — the awaiting detector is the **screen itself**,
   exactly like cmux's codex poll (`cmux.ts` `checkCodexApproval` reads the screen, not
-  a state query): blind `otty pane capture` on an interval → `parseMenu`/`classifyMenu`
-  (`parse.ts`). Confirmed visible menu ⇒ `routeStatus(awaiting)` + set kind; menu
-  cleared ⇒ the busy/idle **exit edge** (busy if mid-turn, idle if the turn also ended).
+  a state query): blind `otty pane capture` on an interval, then a **strict per-agent
+  visible-blocker predicate** before committing `awaiting`.
+  - `parseMenu` (`parse.ts`) alone is **not** that predicate — it accepts *any*
+    contiguous `1.`/`2.` run, so ordinary numbered output in a busy pane would
+    false-trigger `awaiting` and (worse) send response keys into the running agent.
+    Gate on a real chooser: **codex** → `isCodexApprovalScreen` (`parse.ts` — the
+    selected-option + confirmation-footer check cmux already uses); **claude** → a
+    **new, equally strict** predicate (verify the interactive chooser — the selection
+    cursor `❯` + the confirm prompt, not just numbered lines).
+  - Only a confirmed blocker ⇒ `routeStatus(awaiting)` + `classifyMenu` for kind; menu
+    cleared ⇒ the busy/idle **exit edge** (busy if mid-turn, idle if the turn also
+    ended). This strictness matters *more* here than in cmux/herdr, which first get an
+    authoritative "a blocker exists" signal (hook event / `explain()`) and only then
+    read the screen — otty has neither, so the screen predicate is the **sole** gate.
   - **When to poll (open — see §5):** cmux arms its codex poll on the *busy* it learns
     from its own events; otty learns busy only from `SELF_HOOK`, not the mux. So either
     (a) poll every agent pane on a modest interval, or (b) let the bridge arm/disarm a
@@ -174,13 +185,20 @@ Track this as **blocking for v1**.
    → `PaneInfo`, agent detection, the menu-poll state machine — as exported pure
    functions for unit tests (mirror how `cmux.ts` exports `foldHookSessions`,
    `isStaleZombie`, `bareSession`).
-2. **`src/index.ts`** — add `MUX=otty` to `selectMux`; add `ottyAvailable()` to the
+2. **Strict claude visible-blocker predicate** (`parse.ts`) — a pure function like
+   `isCodexApprovalScreen` that confirms a *real* claude chooser (selection cursor
+   `❯` + confirm prompt), so the screen-only poll never routes `awaiting` on plain
+   numbered output (§2B). **v1 requirement, not optional** — it is the sole gate
+   under otty. Unit-test it against captured samples: a real permission menu *and*
+   ordinary busy output that merely contains `1.`/`2.` lines (must NOT match).
+3. **`src/index.ts`** — add `MUX=otty` to `selectMux`; add `ottyAvailable()` to the
    auto-detect list; extend the unknown-`MUX` error string. Add the banner warning
    when `MUX=otty` and `SELF_HOOK` is unset (decision A).
-3. **`scripts/test-otty.ts`** — `node:test` unit suite for the pure functions
-   (panes-JSON parse, agent detection, menu-poll transitions), in the `test-*.ts`
-   style. `pnpm check` + this suite green before commit.
-4. **E2E** (per CLAUDE.md "Verification"): `MUX=otty SELF_HOOK=1 pnpm start`, run
+4. **`scripts/test-otty.ts`** — `node:test` unit suite for the pure functions
+   (panes-JSON parse, agent detection, the blocker predicate, menu-poll
+   transitions), in the `test-*.ts` style. `pnpm check` + this suite green before
+   commit.
+5. **E2E** (per CLAUDE.md "Verification"): `MUX=otty SELF_HOOK=1 pnpm start`, run
    claude inside otty, record with `tools/app-sim.ts`, drive a turn via
    `POST /api/prompt`, confirm text_delta / tool bubbles / a permission menu all
    arrive. Repeat once for codex (also validates decision C's `/hooks` trust
@@ -258,6 +276,12 @@ env | grep -i otty     # inside the agent pane: does otty export a per-pane id e
 - **P8/decision D is the top blocker.** Without an otty pane-id env var *or* the
   pid fallback wired in, no self-hook report reaches a bridge and the whole
   `SELF_HOOK`-only design is inert. Resolve P8 before any other work.
+- **False-positive `awaiting` is the top correctness risk of a screen-only detector.**
+  With no authoritative "a blocker exists" signal (§2B), a permissive parse would route
+  `awaiting` on plain numbered output and send response keys into a running agent. The
+  strict per-agent visible-blocker predicate (`isCodexApprovalScreen`; a new claude
+  equivalent) is a v1 requirement, unit-tested against real busy output that contains
+  `1.`/`2.` lines but is *not* a menu.
 - **No otty state-read ⇒ the screen is the only awaiting signal (§2B).**
   `otty state:` is a hook *write* and `otty watch:` blocks until idle — neither is a
   point-in-time "is it blocked?" query. So the awaiting poll blind-captures the
