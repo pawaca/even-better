@@ -94,22 +94,25 @@ one exit edge:
 
 - **`awaiting`** (permission/question menu). Per the interaction-layer invariant,
   **the screen is authoritative** (a hook's PermissionRequest is only a candidate).
-  Generalize cmux's codex-approval poll (`cmux.ts` `checkCodexApproval`) from
-  codex-only to **all agent panes**:
-  1. *cheap gate:* poll `otty state:<agent> <id>` (~700 ms). Ⓟ whether it reports
-     `awaiting-input`/`busy` — if it does, only capture the screen when it hints a
-     block; if it doesn't, fall back to a blind capture poll while the pane is
-     believed busy.
-  2. *authoritative confirm:* `otty pane capture` → `parseMenu`/`classifyMenu`
-     (`parse.ts`). Confirmed visible menu ⇒ `routeStatus(awaiting)` + set kind;
-     menu cleared ⇒ back to busy/idle.
-  This keeps the screen authoritative (satisfies the invariant) and uses
-  `otty state:` only to avoid capturing every tick.
+  otty exposes **no point-in-time "is this pane blocked?" query**: `otty state:<agent>`
+  is a *write* that otty's own hooks invoke to *report* lifecycle state (`key=value`),
+  and `otty watch:<agent> <id>` *blocks* until idle (a gate, not a snapshot). So there
+  is no cheap state gate to read — the awaiting detector is the **screen itself**,
+  exactly like cmux's codex poll (`cmux.ts` `checkCodexApproval` reads the screen, not
+  a state query): blind `otty pane capture` on an interval → `parseMenu`/`classifyMenu`
+  (`parse.ts`). Confirmed visible menu ⇒ `routeStatus(awaiting)` + set kind; menu
+  cleared ⇒ the busy/idle **exit edge** (busy if mid-turn, idle if the turn also ended).
+  - **When to poll (open — see §5):** cmux arms its codex poll on the *busy* it learns
+    from its own events; otty learns busy only from `SELF_HOOK`, not the mux. So either
+    (a) poll every agent pane on a modest interval, or (b) let the bridge arm/disarm a
+    per-pane menu-poll on its hook-driven busy/idle (a small bridge→mux seam). (b) is
+    leaner; decide after P4.
 - **`closed`** (pane gone): pane disappears from `otty panes` / `pane show` errors.
 
 > The otty `watchStatus` ≈ cmux's `checkCodexApproval` state machine, promoted from
-> "codex only" to "every agent pane", with the data source swapped from the events
-> stream to an `otty state:` gate + `capture` confirm.
+> "codex only" to "every agent pane", reading the **screen** (`otty pane capture`) —
+> otty offers neither an events stream nor a point-in-time state query to lean on
+> (`otty state:` writes, `otty watch:` blocks).
 
 **Bootstrap note:** because `watchStatus` never emits busy/idle, before the first
 self-hook report a pane looks idle and no turn opens. That is correct under
@@ -208,10 +211,12 @@ otty pane send-keys --pane <id> -- key:Escape
 otty pane send-keys --pane <id> -- "echo hi" key:Enter
 # → need: does a no-text key work? exact accepted tokens (Enter/Return? Down? Escape? Tab? Space?)
 
-# P4 — agent lifecycle state (decides the §2B gate)
-otty state:claude <id>
-otty state:codex <id>
-# → need: output format; does it expose busy / idle / awaiting-input?
+# P4 — what state:/watch: really are (decides §2B "when to poll")
+#   DO NOT run `otty state:<agent> key=value` — per the CLI ref it WRITES lifecycle
+#   state (it's the command otty's own hooks call), not a reader. Only inspect help:
+otty --help                              # confirm the state:/watch: descriptions
+otty watch:claude <id> --timeout-secs 1  # read side: does it just block until idle? exit code?
+# → expect NO point-in-time "is it awaiting?" query ⇒ §2B awaiting = screen capture only
 
 # P5 — exists probe
 otty pane show --pane <id>
@@ -240,7 +245,7 @@ env | grep -i otty     # inside the agent pane: does otty export a per-pane id e
 | P1 | pane-id / cwd / process / focused field names | |
 | P2 | capture is plain text? `--lines 0` semantics | |
 | P3 | bare-key works? token names | |
-| P4 | `otty state:` exposes awaiting-input/busy/idle? format | |
+| P4 | state:/watch: true nature (write vs blocking read); any awaiting query? | |
 | P5 | `pane show` on a missing pane → ? | |
 | P6 | any `otty events` stream? | |
 | P7 | codex `/hooks` re-trust needed? both hooks fire? | |
@@ -253,11 +258,11 @@ env | grep -i otty     # inside the agent pane: does otty export a per-pane id e
 - **P8/decision D is the top blocker.** Without an otty pane-id env var *or* the
   pid fallback wired in, no self-hook report reaches a bridge and the whole
   `SELF_HOOK`-only design is inert. Resolve P8 before any other work.
-- **P4 is load-bearing for §2B.** If `otty state:` does not expose an
-  awaiting/blocked signal, the awaiting poll must blind-capture the screen on an
-  interval while a turn is believed busy — heavier, and it needs a "believed busy"
-  signal that only `SELF_HOOK` provides (the bridge would have to hint the mux, a
-  new coupling). Prefer a state signal; fall back to blind capture only if forced.
+- **No otty state-read ⇒ the screen is the only awaiting signal (§2B).**
+  `otty state:` is a hook *write* and `otty watch:` blocks until idle — neither is a
+  point-in-time "is it blocked?" query. So the awaiting poll blind-captures the
+  screen; the open part is *when* to poll: every agent pane on an interval, or a
+  `SELF_HOOK`-armed per-pane poll (a bridge→mux seam). Resolve with P4.
 - **P6 changes the whole shape.** A real `otty events`-style stream would let
   `watchStatus` subscribe (cmux-style) instead of poll — collapses most of §2B.
 - **P7 (codex trust).** If appending shifts indices and breaks otty's trust, we
