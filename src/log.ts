@@ -22,6 +22,38 @@ export const writesEventLog = logMode !== "off";
 export const tracesStream = logMode === "trace";
 export const logsVerboseSse = logMode === "trace";
 
+// The human-readable diagnostic stream (`[hook]`, `[bridge]`, `[sse]`, the boot banner, …)
+// goes to the terminal; teeing it here too means the lines needed to diagnose a live issue
+// are already on disk without re-running with an extra flag. Separate from the JSON event
+// log so `tools/` parsers stay clean.
+export const consoleLogPath =
+  process.env.CONSOLE_LOG_FILE ?? `/tmp/even-better-${process.env.INSTANCE_ID ?? process.pid}.log`;
+
+/** Tee console.{log,info,warn,error} to `consoleLogPath` (timestamped + token-redacted).
+ *  Call once at startup, before the banner, so everything shown is captured. Off with
+ *  LOG=off. Best-effort — a file error never breaks a console call. */
+export function installConsoleTee(): void {
+  if (logMode === "off") return;
+  const level: Array<["log" | "info" | "warn" | "error", string]> = [
+    ["log", "LOG"],
+    ["info", "INF"],
+    ["warn", "WRN"],
+    ["error", "ERR"],
+  ];
+  for (const [method, tag] of level) {
+    const orig = console[method].bind(console);
+    console[method] = (...args: unknown[]): void => {
+      orig(...args);
+      try {
+        const text = args.map((a) => (typeof a === "string" ? a : String(a))).join(" ");
+        appendFileSync(consoleLogPath, `${new Date().toISOString()} ${tag} ${redactString(text)}\n`);
+      } catch {
+        // best effort — never let logging break a console call
+      }
+    };
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -41,7 +73,8 @@ function isSensitiveKey(key: string): boolean {
 function redactString(value: string): string {
   return value
     .replace(/(\btoken=)[^&\s"']+/gi, "$1[REDACTED]")
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]");
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
+    .replace(/(\bToken\s*:\s*)[^\s(]+/g, "$1[REDACTED]"); // the "Token : <value>" banner line (colon, not the token= URL form)
 }
 
 export function sanitizeForLog(value: unknown): unknown {

@@ -16,7 +16,7 @@ import { emit, getMessages, sseHandler } from "./sse.js";
 import { getMux, setMux, type Multiplexer } from "./multiplexer.js";
 import { HerdrMultiplexer, herdrAvailable } from "./herdr.js";
 import { CmuxMultiplexer, cmuxAvailable } from "./cmux.js";
-import { logEvent, eventLogPath, logMode, writesEventLog } from "./log.js";
+import { logEvent, eventLogPath, logMode, writesEventLog, consoleLogPath, installConsoleTee } from "./log.js";
 import { extractModel } from "./parse.js";
 import { readClaudeModel } from "./transcript.js";
 import { readCodexModel } from "./codex-transcript.js";
@@ -32,6 +32,10 @@ import {
   hooksInstalled,
 } from "./hook-install.js";
 import { maskToken, printConnect } from "./connect-url.js";
+
+// Tee the terminal diagnostics to a file before anything logs, so the lines needed to
+// diagnose a live issue are on disk without re-running with a flag.
+installConsoleTee();
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
@@ -513,6 +517,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   console.log(`  Token    : ${maskToken(TOKEN)}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
   console.log(`  Log mode : ${logMode}`);
   console.log(`  Log      : ${writesEventLog ? eventLogPath : "off"}`);
+  if (logMode !== "off") console.log(`  Diag log : ${consoleLogPath}`);
   console.log("");
   try {
     const agents = await refreshAgents();
