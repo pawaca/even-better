@@ -5,7 +5,6 @@ import readline from "node:readline";
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import qrcodeTerminal from "qrcode-terminal";
 import {
   disposeAll,
   focusedOrFirstBridge,
@@ -30,7 +29,9 @@ import {
   uninstallCodexHooks,
   codexHooksFeatureEnabled,
   codexConfigPath,
+  hooksInstalled,
 } from "./hook-install.js";
+import { maskToken, printConnect } from "./connect-url.js";
 
 const VERSION = "0.1.0";
 const INSTANCE_ID = process.env.INSTANCE_ID ?? String(process.pid);
@@ -509,7 +510,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   console.log(`  Local    : http://${bind.bindHost === "0.0.0.0" ? "127.0.0.1" : bind.bindHost}:${actualPort}`);
   if (basePaths.length > 0) console.log(`  Paths    : ${basePaths.join(", ")}`);
   if (publicAccess) console.log(`  Public   : ${publicAccess}`);
-  console.log(`  Token    : ${TOKEN}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
+  console.log(`  Token    : ${maskToken(TOKEN)}${process.env.BRIDGE_TOKEN ? " (from BRIDGE_TOKEN)" : " (ephemeral)"}`);
   console.log(`  Log mode : ${logMode}`);
   console.log(`  Log      : ${writesEventLog ? eventLogPath : "off"}`);
   console.log("");
@@ -521,7 +522,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
       console.log(`  agent : ${a.agent} pane=${a.paneId} status=${a.status} cwd=${a.cwd}`);
     }
     if (agents.length === 0) {
-      console.log(`  agent : (none detected — start claude/codex inside ${getMux().name})`);
+      console.log(`  agent : none yet — start claude or codex inside ${getMux().name}; it's picked up automatically (no restart).`);
     }
   } catch (err) {
     console.error(`  ${getMux().name} : NOT REACHABLE — ${(err as Error).message}`);
@@ -549,15 +550,26 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
     console.log(
       `  Hooks    : ${hookSocketPath()} (${selfHook ? "SELF_HOOK on — driving bridges" : "log-only; SELF_HOOK=1 to drive"})`,
     );
+    // SELF_HOOK drives bridges only if our hook is actually installed — else no reports
+    // arrive and the pane silently never cuts over. Warn so it isn't a silent no-op.
+    if (selfHook) {
+      const inst = hooksInstalled();
+      if (!inst.claude && !inst.codex) {
+        console.log("  ⚠ SELF_HOOK=1 but no even-better hooks are installed — no reports will arrive.");
+        console.log("    Run `pnpm start hook-install`, then restart the agent panes.");
+      } else if (!inst.claude || !inst.codex) {
+        console.log(
+          `  ⚠ SELF_HOOK=1 — ${inst.claude ? "Codex" : "Claude"} hooks not installed (only ${inst.claude ? "Claude" : "Codex"} will report); re-run hook-install.`,
+        );
+      }
+    }
   } catch (err) {
     console.error(`  Hooks    : disabled — ${(err as Error).message}`);
   }
 
   if (publicBase) {
-    const url = appUrlFromBase(publicBase);
     console.log("");
-    console.log(`  Scan to connect · ${url}`);
-    if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+    printConnect("Scan to connect", appUrlFromBase(publicBase), qrEnabled);
     return;
   }
 
@@ -574,9 +586,7 @@ const server = app.listen(listenPort, bind.bindHost, async () => {
   const host = bind.qrHost ?? "localhost";
   if (!bind.qrHost) console.log("  (no LAN address found — showing localhost, which a phone can't reach)");
   console.log("");
-  const url = urlFor(host, actualPort);
-  console.log(`  Scan to connect · ${url}`);
-  if (qrEnabled) qrcodeTerminal.generate(url, { small: true }, (code) => console.log(code));
+  printConnect("Scan to connect", urlFor(host, actualPort), qrEnabled);
 });
 
 // Tear down both the bridges and the multiplexer (cmux holds a long-lived

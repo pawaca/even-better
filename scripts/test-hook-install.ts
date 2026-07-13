@@ -13,6 +13,7 @@ import {
   codexHookEntry,
   shellSingleQuote,
   codexHooksFeatureEnabled,
+  hooksInstalled,
   CLAUDE_EVENTS,
   CODEX_EVENTS,
   HOOK_MARKER,
@@ -164,6 +165,28 @@ test("installCodexHooks writes hooks.json and uninstall round-trips, keeping oth
   } finally {
     if (prev === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prev;
+  }
+});
+
+test("hooksInstalled reflects our marker in each agent's config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eb-inst-"));
+  const prevC = process.env.CLAUDE_CONFIG_DIR;
+  const prevX = process.env.CODEX_HOME;
+  process.env.CLAUDE_CONFIG_DIR = join(dir, "claude"); // installClaudeHooks mkdirs this
+  process.env.CODEX_HOME = dir;
+  try {
+    assert.deepEqual(hooksInstalled(), { claude: false, codex: false }); // nothing yet
+    installClaudeHooks();
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+    installCodexHooks();
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: true });
+    uninstallCodexHooks();
+    assert.deepEqual(hooksInstalled(), { claude: true, codex: false });
+  } finally {
+    if (prevC === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevC;
+    if (prevX === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevX;
   }
 });
 

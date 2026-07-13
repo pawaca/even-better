@@ -265,3 +265,35 @@ export function uninstallCodexHooks(): string | null {
   writeFileSync(path, JSON.stringify(next, null, 2) + "\n");
   return path;
 }
+
+/** True if OUR hook (by marker) is present anywhere in this config object. Pure. */
+function anyOurHook(settings: Record<string, unknown>): boolean {
+  if (!isRecord(settings.hooks)) return false;
+  for (const val of Object.values(settings.hooks)) {
+    if (!Array.isArray(val)) continue;
+    for (const block of val) {
+      if (isRecord(block) && Array.isArray(block.hooks) && block.hooks.some(entryIsOurs)) return true;
+    }
+  }
+  return false;
+}
+
+/** Read a JSON config without throwing — null if absent/unreadable/not an object. Used only
+ *  for the read-only installed check (never a precursor to a write, so no no-clobber need). */
+function readJsonSafe(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether our hook is currently installed for each agent — so the server can warn when
+ *  SELF_HOOK is on but no reports will arrive. Best-effort + read-only. */
+export function hooksInstalled(): { claude: boolean; codex: boolean } {
+  const claude = readJsonSafe(claudeSettingsPath());
+  const codex = readJsonSafe(codexHooksPath());
+  return { claude: !!claude && anyOurHook(claude), codex: !!codex && anyOurHook(codex) };
+}

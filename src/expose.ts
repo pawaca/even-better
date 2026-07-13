@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import qrcodeTerminal from "qrcode-terminal";
+import { printConnect } from "./connect-url.js";
 
 // Public access, selected via PUBLIC_ACCESS=<provider>. Most providers are tiny specs:
 // spawn their CLI pointed at localhost:port, scrape the public URL, then print
@@ -300,10 +300,8 @@ export function startExpose(
     const base = provider.parseUrl(buffer);
     if (!base) return;
     found = true;
-    const url = buildAppUrl(base);
     console.log(`\n  Public (${provider.name}): ${base}`);
-    console.log(`  Scan to connect · ${url}`);
-    if (options.qrEnabled !== false) qrcodeTerminal.generate(url, { small: true }, (c) => console.log(c));
+    printConnect("Scan to connect", buildAppUrl(base), options.qrEnabled !== false);
   };
   child.stdout.on("data", onData);
   child.stderr.on("data", onData);
@@ -385,10 +383,8 @@ function startTailscaleFunnel(port: number, buildAppUrl: (publicBase: string) =>
     waitForFunnelPort(program, publicPort);
     releaseFunnelSlotLock();
     const base = basePath ? withPath(origin, basePath) : origin;
-    const url = buildAppUrl(base);
     console.log(`\n  Public (funnel): ${base}`);
-    console.log(`  Scan to connect · ${url}`);
-    if (options.qrEnabled !== false) qrcodeTerminal.generate(url, { small: true }, (c) => console.log(c));
+    printConnect("Scan to connect", buildAppUrl(base), options.qrEnabled !== false);
   };
   child.stdout.on("data", onData);
   child.stderr.on("data", onData);
