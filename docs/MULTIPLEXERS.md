@@ -13,6 +13,9 @@ exists; this doc is *what the backends actually do*.
 > **observed/source wins** — see [Discrepancies](#discrepancies). Re-derivation
 > recipe at the end.
 
+> A **third backend (otty)** is planned but not yet implemented — design + probe
+> checklist in `docs/OTTY-BACKEND.md`. It is `SELF_HOOK`-only by construction.
+
 ---
 
 ## Prerequisites: agent hooks, and what breaks without them
