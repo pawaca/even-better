@@ -13,6 +13,12 @@ exists; this doc is *what the backends actually do*.
 > **observed/source wins** — see [Discrepancies](#discrepancies). Re-derivation
 > recipe at the end.
 
+> A **third backend (otty)** is designed and ready to build, but **blocked on one
+> upstream bug**: AppleScript `tab.tty` is declared and documented yet returns an
+> empty string, breaking the only `pid → tty → tab → pane` route for hook routing.
+> otty's AppleScript layer exposes more than its CLI (`processes` already solves
+> agent detection). Full probe results + the design: `docs/OTTY-BACKEND.md`.
+
 ---
 
 ## Prerequisites: agent hooks, and what breaks without them
