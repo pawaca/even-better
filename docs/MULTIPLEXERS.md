@@ -13,11 +13,11 @@ exists; this doc is *what the backends actually do*.
 > **observed/source wins** — see [Discrepancies](#discrepancies). Re-derivation
 > recipe at the end.
 
-> A **third backend (otty)** was investigated and is **blocked upstream** — otty
-> exposes no per-pane self-identification primitive (no pane-id env var, no
-> `pid`/`tty` in its API, no OSC query, and bare `otty pane show` resolves to the
-> *focused* pane, not the caller). Probe results, the design that's ready to go, and
-> the one upstream change that would unblock it: `docs/OTTY-BACKEND.md`.
+> A **third backend (otty)** is designed and ready to build, but **blocked on one
+> upstream bug**: AppleScript `tab.tty` is declared and documented yet returns an
+> empty string, breaking the only `pid → tty → tab → pane` route for hook routing.
+> otty's AppleScript layer exposes more than its CLI (`processes` already solves
+> agent detection). Full probe results + the design: `docs/OTTY-BACKEND.md`.
 
 ---
 
